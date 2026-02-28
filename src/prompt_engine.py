@@ -21,7 +21,7 @@ class PromptEngine:
         self._items = self._load()
 
     def _load(self) -> list[PromptItem]:
-        raw = json.loads(self.dataset_path.read_text(encoding="utf-8"))
+        raw = json.loads(self.dataset_path.read_text(encoding="utf-8-sig"))
         return [PromptItem(**item) for item in raw]
 
     def sample(self, n: int) -> list[PromptItem]:

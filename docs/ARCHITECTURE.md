@@ -20,5 +20,6 @@
 
 ## Design Choices
 - Deterministic prompt sampling early on for reproducible hackathon demos.
-- `DummyGenerator` in `trainer.py` keeps the training loop verifiable before model integration.
+- `DummyGenerator` em `dry_run` mantém o loop verificável sem custo de GPU.
+- Em modo real (`dry_run: false`), o trainer usa HF + LoRA + update group-relative.
 - MCTS kept isolated in `src/mcts.py` to avoid blocking MVP delivery.

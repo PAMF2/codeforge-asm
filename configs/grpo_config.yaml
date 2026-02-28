@@ -17,6 +17,8 @@ training:
   learning_rate: 5e-6
   batch_size: 2
   gradient_accumulation_steps: 4
+  grad_clip_norm: 1.0
+  train_max_seq_len: 1024
   max_new_tokens: 256
   temperature: 0.8
   top_p: 0.95

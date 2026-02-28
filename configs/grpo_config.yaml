@@ -1,0 +1,39 @@
+﻿project:
+  name: codeforge-asm
+  seed: 42
+
+model:
+  name_or_path: mistralai/Ministral-3B-Instruct
+  trust_remote_code: true
+  load_in_4bit: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+
+training:
+  iterations: 8
+  prompts_per_iteration: 16
+  generations_per_prompt: 16
+  learning_rate: 5e-6
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  max_new_tokens: 256
+  temperature: 0.8
+  top_p: 0.95
+  kl_beta: 0.1
+  use_mcts_after_iteration: 2
+  use_wandb: true
+  dry_run: true
+
+reward:
+  stage_weights:
+    assemble: 0.25
+    link: 0.25
+    run: 0.20
+    correctness: 0.30
+  timeout_seconds: 5
+
+paths:
+  prompt_dataset: prompts/dataset.json
+  artifacts_dir: artifacts
+  checkpoints_dir: checkpoints

@@ -1,0 +1,58 @@
+﻿[
+  {
+    "id": "t1_exit_42",
+    "tier": 1,
+    "instruction": "Write a NASM x86-64 Linux program that exits with code 42.",
+    "expected_exit_code": 42,
+    "expected_stdout": null
+  },
+  {
+    "id": "t1_exit_7",
+    "tier": 1,
+    "instruction": "Write a NASM x86-64 Linux program that exits with code 7.",
+    "expected_exit_code": 7,
+    "expected_stdout": null
+  },
+  {
+    "id": "t2_print_hello",
+    "tier": 2,
+    "instruction": "Write a NASM x86-64 Linux program that prints exactly 'Hello, World!\\n'.",
+    "expected_exit_code": null,
+    "expected_stdout": "Hello, World!\n"
+  },
+  {
+    "id": "t2_print_ok",
+    "tier": 2,
+    "instruction": "Write a NASM x86-64 Linux program that prints exactly 'OK\\n'.",
+    "expected_exit_code": null,
+    "expected_stdout": "OK\n"
+  },
+  {
+    "id": "t3_mul_7_8",
+    "tier": 3,
+    "instruction": "Compute 7 * 8 and exit with that value as status code.",
+    "expected_exit_code": 56,
+    "expected_stdout": null
+  },
+  {
+    "id": "t3_add_20_22",
+    "tier": 3,
+    "instruction": "Compute 20 + 22 and exit with that value as status code.",
+    "expected_exit_code": 42,
+    "expected_stdout": null
+  },
+  {
+    "id": "t4_sum_1_5",
+    "tier": 4,
+    "instruction": "Sum numbers from 1 to 5 and exit with the result as status code.",
+    "expected_exit_code": 15,
+    "expected_stdout": null
+  },
+  {
+    "id": "t4_sum_1_10",
+    "tier": 4,
+    "instruction": "Sum numbers from 1 to 10 and exit with the result as status code.",
+    "expected_exit_code": 55,
+    "expected_stdout": null
+  }
+]

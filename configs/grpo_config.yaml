@@ -27,8 +27,8 @@ training:
   use_mcts_after_iteration: 2
   use_wandb: true
   push_to_hub: true
-  hub_repo_id: mistral-hackaton-2026/Hackathon-model
-  hub_fallback_repo_id: PAMF2/Hackathon-model
+  hub_repo_id: mistral-hackaton-2026/codeforge
+  hub_fallback_repo_id: PAMF2/codeforge
   hub_private: true
   dry_run: true
 

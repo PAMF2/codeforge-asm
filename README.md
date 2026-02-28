@@ -78,6 +78,7 @@ python -m src.trainer --config configs/grpo_config.yaml
 Backends de treino:
 - `training.grpo_backend: manual` -> update group-relative custom (padrão).
 - `training.grpo_backend: trl` -> usa `trl.GRPOTrainer` nativo.
+- Push padrão de modelo: `mistral-hackaton-2026/codeforge`.
 
 Preflight local:
 ```bash

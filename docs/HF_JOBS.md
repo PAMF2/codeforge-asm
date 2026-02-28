@@ -40,5 +40,6 @@ hf jobs inspect <JOB_ID>
 - Validated base model id: `mistralai/Ministral-8B-Instruct-2410`.
 - Current account check returned `403` for creating repos under `mistral-hackaton-2026` namespace.
 - Current account check returned `402` for running Jobs on personal namespace due insufficient prepaid credits.
-- Trainer is configured with fallback push target: `PAMF2/Hackathon-model`.
+- Default model push target is `mistral-hackaton-2026/codeforge`.
+- Trainer has fallback push target: `PAMF2/codeforge`.
 - Local Windows machine may not have `nasm/ld`; HF Linux job can auto-install with `--ensure-system-deps`.

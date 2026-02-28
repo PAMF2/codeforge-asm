@@ -79,6 +79,16 @@ Backends de treino:
 - `training.grpo_backend: manual` -> update group-relative custom (padrão).
 - `training.grpo_backend: trl` -> usa `trl.GRPOTrainer` nativo.
 
+Preflight local:
+```bash
+python scripts/preflight.py
+```
+
+HF Jobs (PowerShell):
+```powershell
+.\scripts\submit_hf_job.ps1 -Flavor a10g-small -Timeout 6h -Detach
+```
+
 Demo:
 ```bash
 python demo/app.py
@@ -96,6 +106,8 @@ python eval/evaluate.py --predictions artifacts/sample_predictions.json
 - Treino group-relative (GRPO-inspired) implementado em `src/trainer.py`.
 - Backend `trl` integrado com fallback por configuração.
 - Suporte a carregamento real de modelo HF + LoRA + checkpoints por iteração.
+- Push automático de checkpoints para HF Hub (`training.push_to_hub`).
+  - Se não houver permissão na org, usa `hub_fallback_repo_id`.
 - MCTS está separado como módulo de upgrade.
 
 ## Próxima Integração Crítica

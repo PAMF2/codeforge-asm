@@ -3,7 +3,7 @@
   seed: 42
 
 model:
-  name_or_path: mistralai/Ministral-3B-Instruct
+  name_or_path: mistralai/Ministral-8B-Instruct-2410
   trust_remote_code: true
   load_in_4bit: true
   lora_r: 16
@@ -26,6 +26,10 @@ training:
   kl_beta: 0.1
   use_mcts_after_iteration: 2
   use_wandb: true
+  push_to_hub: true
+  hub_repo_id: mistral-hackaton-2026/Hackathon-model
+  hub_fallback_repo_id: PAMF2/Hackathon-model
+  hub_private: true
   dry_run: true
 
 reward:

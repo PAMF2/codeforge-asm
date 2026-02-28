@@ -3,6 +3,7 @@
 import argparse
 import inspect
 import json
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,12 @@ try:
     from datasets import Dataset
 except Exception:  # pragma: no cover
     Dataset = None
+
+try:
+    from huggingface_hub import HfApi, upload_folder
+except Exception:  # pragma: no cover
+    HfApi = None
+    upload_folder = None
 
 try:
     from trl import GRPOConfig, GRPOTrainer
@@ -403,6 +410,58 @@ def run_grpo_update_trl(trl_bundle: TRLBundle | None) -> dict[str, float]:
     }
 
 
+def _hf_token_from_env() -> str | None:
+    return (
+        None
+        or os.getenv("HF_TOKEN")
+        or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    )
+
+
+def maybe_push_checkpoint_to_hub(
+    cfg: RuntimeConfig,
+    ckpt_path: Path,
+    iteration: int,
+) -> None:
+    training = cfg.raw["training"]
+    if not bool(training.get("push_to_hub", False)):
+        return
+    if HfApi is None or upload_folder is None:
+        print("[CodeForge] huggingface_hub not available; skipping push_to_hub")
+        return
+
+    token = _hf_token_from_env()
+    repo_id = str(training.get("hub_repo_id", "")).strip()
+    if not token or not repo_id:
+        print("[CodeForge] Missing HF token or hub_repo_id; skipping push_to_hub")
+        return
+
+    private = bool(training.get("hub_private", True))
+    fallback_repo_id = str(training.get("hub_fallback_repo_id", "")).strip()
+    api = HfApi(token=token)
+
+    target_repo = repo_id
+    try:
+        api.create_repo(repo_id=target_repo, repo_type="model", private=private, exist_ok=True)
+    except Exception as exc:
+        if not fallback_repo_id:
+            print(f"[CodeForge] Cannot create repo {repo_id}: {exc}")
+            return
+        print(f"[CodeForge] Cannot create repo {repo_id}; using fallback {fallback_repo_id}")
+        target_repo = fallback_repo_id
+        api.create_repo(repo_id=target_repo, repo_type="model", private=private, exist_ok=True)
+
+    upload_folder(
+        repo_id=target_repo,
+        repo_type="model",
+        folder_path=str(ckpt_path),
+        path_in_repo=f"checkpoints/iter_{iteration}",
+        token=token,
+        commit_message=f"Add checkpoint iter_{iteration}",
+    )
+    print(f"[CodeForge] Pushed checkpoint iter_{iteration} to {target_repo}")
+
+
 def evaluate_candidates(
     reward_pipeline: RewardPipeline,
     prompt_item: PromptItem,
@@ -519,6 +578,7 @@ def main() -> None:
             ensure_dir(ckpt_path)
             train_bundle.model.save_pretrained(ckpt_path)
             train_bundle.tokenizer.save_pretrained(ckpt_path)
+            maybe_push_checkpoint_to_hub(cfg=cfg, ckpt_path=ckpt_path, iteration=it)
 
     if run is not None:
         run.finish()

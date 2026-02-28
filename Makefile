@@ -3,7 +3,7 @@ VENV ?= .venv
 PIP := $(VENV)/Scripts/pip
 PY := $(VENV)/Scripts/python
 
-.PHONY: setup train demo eval tree clean
+.PHONY: setup train demo eval preflight hf-job tree clean
 
 setup:
 	$(PYTHON) -m venv $(VENV)
@@ -17,6 +17,12 @@ demo:
 
 eval:
 	$(PY) eval/evaluate.py --predictions artifacts/sample_predictions.json
+
+preflight:
+	$(PY) scripts/preflight.py
+
+hf-job:
+	powershell -ExecutionPolicy Bypass -File scripts/submit_hf_job.ps1 -Flavor a10g-small -Timeout 6h -Detach
 
 tree:
 	tree /F

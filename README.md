@@ -89,12 +89,12 @@ python eval/evaluate.py --predictions artifacts/sample_predictions.json
 - Reward pipeline em 4 estágios implementado.
 - Best-of-N implementado.
 - Loop de treino com logging e artefatos implementado.
-- GRPO está com stub (`run_grpo_update`) pronto para integração TRL.
+- Treino group-relative (GRPO-inspired) implementado em `src/trainer.py`.
+- Suporte a carregamento real de modelo HF + LoRA + checkpoints por iteração.
 - MCTS está separado como módulo de upgrade.
 
 ## Próxima Integração Crítica
-Implementar GRPO real em `src/trainer.py`:
-- carregar Ministral (3B) com 4-bit,
-- aplicar LoRA,
-- usar TRL para atualização por reward relativo,
-- salvar adapters/checkpoints por iteração.
+Trocar objetivo atual por `TRL GRPOTrainer` nativo quando ambiente estiver estável:
+- manter o mesmo buffer `(prompt, asm, reward)`,
+- conectar penalidade KL explícita,
+- comparar curva com baseline atual.

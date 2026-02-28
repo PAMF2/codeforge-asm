@@ -35,11 +35,20 @@ def ensure_dir(path: Path) -> None:
 
 
 def run_cmd(cmd: Iterable[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        list(cmd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
+    cmd_list = list(cmd)
+    try:
+        return subprocess.run(
+            cmd_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        return subprocess.CompletedProcess(
+            cmd_list,
+            returncode=127,
+            stdout="",
+            stderr=f"Command not found: {exc}",
+        )

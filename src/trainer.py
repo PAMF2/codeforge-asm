@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import random
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ import yaml
 from .best_of_n import BestOfN, BestOfNConfig
 from .prompt_engine import PromptEngine, PromptItem
 from .reward import RewardPipeline
-from .utils import SYS_PROMPT, ensure_dir
+from .utils import SYS_PROMPT, ensure_dir, sanitize_model_output
 
 try:
     import wandb
@@ -39,6 +40,17 @@ except Exception:  # pragma: no cover
     AutoTokenizer = None
     BitsAndBytesConfig = None
 
+try:
+    from datasets import Dataset
+except Exception:  # pragma: no cover
+    Dataset = None
+
+try:
+    from trl import GRPOConfig, GRPOTrainer
+except Exception:  # pragma: no cover
+    GRPOConfig = None
+    GRPOTrainer = None
+
 
 @dataclass
 class RuntimeConfig:
@@ -55,6 +67,11 @@ class RuntimeConfig:
 
 def load_config(path: str | Path) -> RuntimeConfig:
     return RuntimeConfig(yaml.safe_load(Path(path).read_text(encoding="utf-8")))
+
+
+def _filter_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    sig = inspect.signature(callable_obj)
+    return {k: v for k, v in kwargs.items() if k in sig.parameters}
 
 
 class DummyGenerator:
@@ -109,6 +126,11 @@ class TrainBundle:
     tokenizer: Any
     optimizer: Any
     generator: Any
+
+
+@dataclass
+class TRLBundle:
+    trainer: Any
 
 
 def maybe_build_train_bundle(cfg: RuntimeConfig) -> TrainBundle | None:
@@ -199,8 +221,7 @@ def _group_relative_weights(rows: list[dict[str, Any]]) -> list[float]:
     return weights
 
 
-def run_grpo_update(rows: list[dict[str, Any]], cfg: RuntimeConfig, bundle: TrainBundle | None) -> dict[str, float]:
-    """Group-relative update (GRPO-inspired objective) over generated candidates."""
+def run_grpo_update_manual(rows: list[dict[str, Any]], cfg: RuntimeConfig, bundle: TrainBundle | None) -> dict[str, float]:
     if bundle is None:
         return {"grpo_loss": 0.0, "kl": 0.0}
 
@@ -226,8 +247,8 @@ def run_grpo_update(rows: list[dict[str, Any]], cfg: RuntimeConfig, bundle: Trai
         if weight <= 0.0:
             continue
 
-        prompt_text = f"{SYS_PROMPT}\\n\\nTask: {row['instruction']}\\n"
-        completion = row["asm"].strip() + "\\n"
+        prompt_text = f"{SYS_PROMPT}\n\nTask: {row['instruction']}\n"
+        completion = row["asm"].strip() + "\n"
         full_text = prompt_text + completion
 
         full_enc = tokenizer(full_text, return_tensors="pt", truncation=True, max_length=max_len)
@@ -267,6 +288,119 @@ def run_grpo_update(rows: list[dict[str, Any]], cfg: RuntimeConfig, bundle: Trai
 
     avg_loss = total_loss / max(1, used)
     return {"grpo_loss": avg_loss, "kl": 0.0}
+
+
+def _extract_completion_text(raw_completion: Any) -> str:
+    if isinstance(raw_completion, str):
+        return raw_completion
+
+    if isinstance(raw_completion, list):
+        parts: list[str] = []
+        for msg in raw_completion:
+            if isinstance(msg, dict):
+                content = msg.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+        if parts:
+            return "\n".join(parts)
+
+    return str(raw_completion)
+
+
+def _build_trl_reward_fn(
+    reward_pipeline: RewardPipeline,
+    prompt_by_instruction: dict[str, PromptItem],
+) -> Any:
+    counter = {"n": 0}
+
+    def reward_fn(completions: Any, prompts: Any = None, **_: Any) -> list[float]:
+        if prompts is None:
+            prompts = [""] * len(completions)
+
+        rewards: list[float] = []
+        for prompt_text, completion in zip(prompts, completions):
+            instruction = str(prompt_text).split("Task:", 1)[-1].strip()
+            prompt_item = prompt_by_instruction.get(instruction)
+            if prompt_item is None:
+                rewards.append(0.0)
+                continue
+
+            asm = sanitize_model_output(_extract_completion_text(completion))
+            sample_id = f"trl-{counter['n']}"
+            counter["n"] += 1
+            result = reward_pipeline.evaluate(prompt_item, asm, sample_id)
+            rewards.append(float(result.reward))
+
+        return rewards
+
+    return reward_fn
+
+
+def maybe_build_trl_bundle(
+    cfg: RuntimeConfig,
+    train_bundle: TrainBundle | None,
+    reward_pipeline: RewardPipeline,
+    prompt_items: list[PromptItem],
+    artifacts_dir: Path,
+) -> TRLBundle | None:
+    training = cfg.raw["training"]
+    backend = str(training.get("grpo_backend", "manual")).lower()
+    if backend != "trl":
+        return None
+    if bool(training.get("dry_run", True)):
+        return None
+
+    if train_bundle is None:
+        raise RuntimeError("TRL backend requires non-dry mode with a loaded model.")
+    if GRPOTrainer is None or GRPOConfig is None or Dataset is None:
+        raise RuntimeError("TRL/Datasets dependency missing. Install trl and datasets.")
+
+    prompt_rows = [{"prompt": f"{SYS_PROMPT}\n\nTask: {p.instruction}"} for p in prompt_items]
+    train_dataset = Dataset.from_list(prompt_rows)
+
+    output_dir = artifacts_dir / "trl"
+    ensure_dir(output_dir)
+
+    base_args: dict[str, Any] = {
+        "output_dir": str(output_dir),
+        "learning_rate": float(training.get("learning_rate", 5e-6)),
+        "per_device_train_batch_size": int(training.get("batch_size", 2)),
+        "gradient_accumulation_steps": int(training.get("gradient_accumulation_steps", 4)),
+        "num_generations": int(training.get("generations_per_prompt", 16)),
+        "max_completion_length": int(training.get("max_new_tokens", 256)),
+        "beta": float(training.get("kl_beta", 0.1)),
+        "logging_steps": 1,
+        "report_to": "wandb" if bool(training.get("use_wandb", True)) and wandb is not None else "none",
+    }
+
+    grpo_cfg_kwargs = _filter_kwargs(GRPOConfig, base_args)
+    grpo_cfg = GRPOConfig(**grpo_cfg_kwargs)
+
+    prompt_by_instruction = {p.instruction: p for p in prompt_items}
+    reward_fn = _build_trl_reward_fn(reward_pipeline, prompt_by_instruction)
+
+    trainer_kwargs = {
+        "model": train_bundle.model,
+        "args": grpo_cfg,
+        "train_dataset": train_dataset,
+        "reward_funcs": [reward_fn],
+        "processing_class": train_bundle.tokenizer,
+    }
+    filtered_trainer_kwargs = _filter_kwargs(GRPOTrainer.__init__, trainer_kwargs)
+    trainer = GRPOTrainer(**filtered_trainer_kwargs)
+    return TRLBundle(trainer=trainer)
+
+
+def run_grpo_update_trl(trl_bundle: TRLBundle | None) -> dict[str, float]:
+    if trl_bundle is None:
+        return {"grpo_loss": 0.0, "kl": 0.0}
+
+    result = trl_bundle.trainer.train()
+    log_history = getattr(result, "metrics", {}) or {}
+    return {
+        "grpo_loss": float(log_history.get("train_loss", 0.0)),
+        "kl": float(log_history.get("kl", 0.0)),
+    }
 
 
 def evaluate_candidates(
@@ -320,10 +454,22 @@ def main() -> None:
         top_p=float(cfg.raw["training"]["top_p"]),
     )
 
-    bundle = maybe_build_train_bundle(cfg)
-    generator = bundle.generator if bundle is not None else DummyGenerator()
+    train_bundle = maybe_build_train_bundle(cfg)
+    generator = train_bundle.generator if train_bundle is not None else DummyGenerator()
     best_of_n = BestOfN(generator=generator, cfg=bon_cfg)
-    print(f"[CodeForge] Training mode: {'real' if bundle is not None else 'dry_run'}")
+
+    batch_prompts_for_init = prompts.sample(cfg.prompts_per_iteration)
+    trl_bundle = maybe_build_trl_bundle(
+        cfg=cfg,
+        train_bundle=train_bundle,
+        reward_pipeline=reward_pipeline,
+        prompt_items=batch_prompts_for_init,
+        artifacts_dir=artifacts_dir,
+    )
+
+    backend = str(cfg.raw["training"].get("grpo_backend", "manual")).lower()
+    actual_mode = "dry_run" if train_bundle is None else f"real:{backend}"
+    print(f"[CodeForge] Training mode: {actual_mode}")
 
     use_wandb = bool(cfg.raw["training"].get("use_wandb", True)) and wandb is not None
     run = None
@@ -336,7 +482,7 @@ def main() -> None:
         all_rows: list[dict[str, Any]] = []
 
         for p in batch_prompts:
-            user_prompt = f"{SYS_PROMPT}\\n\\nTask: {p.instruction}"
+            user_prompt = f"{SYS_PROMPT}\n\nTask: {p.instruction}"
             candidates = best_of_n.generate(user_prompt)
             rows = evaluate_candidates(reward_pipeline, p, candidates, sample_prefix=f"it{it}-{p.id}")
             all_rows.extend(rows)
@@ -346,7 +492,10 @@ def main() -> None:
         success_assemble = sum(1 for r in all_rows if r["assembled"]) / max(1, len(all_rows))
         success_correct = sum(1 for r in all_rows if r["correct"]) / max(1, len(all_rows))
 
-        grpo_metrics = run_grpo_update(all_rows, cfg, bundle=bundle)
+        if backend == "trl":
+            grpo_metrics = run_grpo_update_trl(trl_bundle)
+        else:
+            grpo_metrics = run_grpo_update_manual(all_rows, cfg, bundle=train_bundle)
 
         iter_metrics = {
             "iteration": it,
@@ -363,13 +512,13 @@ def main() -> None:
         out_path = artifacts_dir / f"iteration_{it}.json"
         out_path.write_text(json.dumps(all_rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        if bundle is not None:
+        if train_bundle is not None:
             checkpoints_dir = Path(paths["checkpoints_dir"])
             ensure_dir(checkpoints_dir)
             ckpt_path = checkpoints_dir / f"iter_{it}"
             ensure_dir(ckpt_path)
-            bundle.model.save_pretrained(ckpt_path)
-            bundle.tokenizer.save_pretrained(ckpt_path)
+            train_bundle.model.save_pretrained(ckpt_path)
+            train_bundle.tokenizer.save_pretrained(ckpt_path)
 
     if run is not None:
         run.finish()

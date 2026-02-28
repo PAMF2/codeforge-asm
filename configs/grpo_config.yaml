@@ -11,6 +11,7 @@ model:
   lora_dropout: 0.05
 
 training:
+  grpo_backend: manual # options: manual | trl
   iterations: 8
   prompts_per_iteration: 16
   generations_per_prompt: 16

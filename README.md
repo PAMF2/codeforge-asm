@@ -75,6 +75,10 @@ Treino MVP:
 python -m src.trainer --config configs/grpo_config.yaml
 ```
 
+Backends de treino:
+- `training.grpo_backend: manual` -> update group-relative custom (padrão).
+- `training.grpo_backend: trl` -> usa `trl.GRPOTrainer` nativo.
+
 Demo:
 ```bash
 python demo/app.py
@@ -90,6 +94,7 @@ python eval/evaluate.py --predictions artifacts/sample_predictions.json
 - Best-of-N implementado.
 - Loop de treino com logging e artefatos implementado.
 - Treino group-relative (GRPO-inspired) implementado em `src/trainer.py`.
+- Backend `trl` integrado com fallback por configuração.
 - Suporte a carregamento real de modelo HF + LoRA + checkpoints por iteração.
 - MCTS está separado como módulo de upgrade.
 

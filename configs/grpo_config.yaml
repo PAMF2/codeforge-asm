@@ -40,6 +40,13 @@ reward:
     correctness: 0.30
   timeout_seconds: 5
 
+mcts:
+  simulations: 32
+  max_lines: 30
+  branch_factor: 4
+  exploration_constant: 1.414
+  max_depth: 15
+
 paths:
   prompt_dataset: prompts/dataset.json
   artifacts_dir: artifacts

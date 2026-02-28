@@ -1,9 +1,30 @@
-﻿[
+[
   {
-    "id": "t1_exit_42",
+    "id": "t1_exit_0",
     "tier": 1,
-    "instruction": "Write a NASM x86-64 Linux program that exits with code 42.",
-    "expected_exit_code": 42,
+    "instruction": "Write a NASM x86-64 Linux program that exits with code 0.",
+    "expected_exit_code": 0,
+    "expected_stdout": null
+  },
+  {
+    "id": "t1_exit_1",
+    "tier": 1,
+    "instruction": "Write a NASM x86-64 Linux program that exits with code 1.",
+    "expected_exit_code": 1,
+    "expected_stdout": null
+  },
+  {
+    "id": "t1_exit_2",
+    "tier": 1,
+    "instruction": "Write a NASM x86-64 Linux program that exits with code 2.",
+    "expected_exit_code": 2,
+    "expected_stdout": null
+  },
+  {
+    "id": "t1_exit_5",
+    "tier": 1,
+    "instruction": "Write a NASM x86-64 Linux program that exits with code 5.",
+    "expected_exit_code": 5,
     "expected_stdout": null
   },
   {
@@ -14,7 +35,28 @@
     "expected_stdout": null
   },
   {
-    "id": "t2_print_hello",
+    "id": "t1_exit_13",
+    "tier": 1,
+    "instruction": "Write a NASM x86-64 Linux program that exits with code 13.",
+    "expected_exit_code": 13,
+    "expected_stdout": null
+  },
+  {
+    "id": "t1_exit_42",
+    "tier": 1,
+    "instruction": "Write a NASM x86-64 Linux program that exits with code 42.",
+    "expected_exit_code": 42,
+    "expected_stdout": null
+  },
+  {
+    "id": "t1_exit_100",
+    "tier": 1,
+    "instruction": "Write a NASM x86-64 Linux program that exits with code 100.",
+    "expected_exit_code": 100,
+    "expected_stdout": null
+  },
+  {
+    "id": "t2_hello_world",
     "tier": 2,
     "instruction": "Write a NASM x86-64 Linux program that prints exactly 'Hello, World!\\n'.",
     "expected_exit_code": null,
@@ -26,6 +68,34 @@
     "instruction": "Write a NASM x86-64 Linux program that prints exactly 'OK\\n'.",
     "expected_exit_code": null,
     "expected_stdout": "OK\n"
+  },
+  {
+    "id": "t2_print_nasm",
+    "tier": 2,
+    "instruction": "Write a NASM x86-64 Linux program that prints exactly 'NASM\\n'.",
+    "expected_exit_code": null,
+    "expected_stdout": "NASM\n"
+  },
+  {
+    "id": "t2_print_42",
+    "tier": 2,
+    "instruction": "Write a NASM x86-64 Linux program that prints exactly '42\\n'.",
+    "expected_exit_code": null,
+    "expected_stdout": "42\n"
+  },
+  {
+    "id": "t2_print_done",
+    "tier": 2,
+    "instruction": "Write a NASM x86-64 Linux program that prints exactly 'done\\n'.",
+    "expected_exit_code": null,
+    "expected_stdout": "done\n"
+  },
+  {
+    "id": "t2_print_pass",
+    "tier": 2,
+    "instruction": "Write a NASM x86-64 Linux program that prints exactly 'pass\\n'.",
+    "expected_exit_code": null,
+    "expected_stdout": "pass\n"
   },
   {
     "id": "t3_mul_7_8",
@@ -42,16 +112,86 @@
     "expected_stdout": null
   },
   {
+    "id": "t3_sub_100_13",
+    "tier": 3,
+    "instruction": "Compute 100 - 13 and exit with that value as status code.",
+    "expected_exit_code": 87,
+    "expected_stdout": null
+  },
+  {
+    "id": "t3_mul_6_7",
+    "tier": 3,
+    "instruction": "Compute 6 * 7 and exit with that value as status code.",
+    "expected_exit_code": 42,
+    "expected_stdout": null
+  },
+  {
+    "id": "t3_div_50_2",
+    "tier": 3,
+    "instruction": "Compute 50 / 2 using idiv and exit with that value as status code.",
+    "expected_exit_code": 25,
+    "expected_stdout": null
+  },
+  {
+    "id": "t3_max_30_17",
+    "tier": 3,
+    "instruction": "Compute max(30, 17) using cmp/cmov and exit with that value as status code.",
+    "expected_exit_code": 30,
+    "expected_stdout": null
+  },
+  {
+    "id": "t3_add_chain",
+    "tier": 3,
+    "instruction": "Compute 10 + 20 - 5 and exit with that value as status code.",
+    "expected_exit_code": 25,
+    "expected_stdout": null
+  },
+  {
+    "id": "t3_mul_3_9",
+    "tier": 3,
+    "instruction": "Compute 3 * 9 and exit with that value as status code.",
+    "expected_exit_code": 27,
+    "expected_stdout": null
+  },
+  {
     "id": "t4_sum_1_5",
     "tier": 4,
-    "instruction": "Sum numbers from 1 to 5 and exit with the result as status code.",
+    "instruction": "Sum numbers from 1 to 5 using a loop and exit with the result as status code.",
     "expected_exit_code": 15,
     "expected_stdout": null
   },
   {
     "id": "t4_sum_1_10",
     "tier": 4,
-    "instruction": "Sum numbers from 1 to 10 and exit with the result as status code.",
+    "instruction": "Sum numbers from 1 to 10 using a loop and exit with the result as status code.",
+    "expected_exit_code": 55,
+    "expected_stdout": null
+  },
+  {
+    "id": "t4_sum_1_20",
+    "tier": 4,
+    "instruction": "Sum numbers from 1 to 20 using a loop and exit with the result as status code.",
+    "expected_exit_code": 210,
+    "expected_stdout": null
+  },
+  {
+    "id": "t4_sum_even_10",
+    "tier": 4,
+    "instruction": "Sum even numbers from 2 to 10 (2+4+6+8+10=30) using a loop and exit with the result as status code.",
+    "expected_exit_code": 30,
+    "expected_stdout": null
+  },
+  {
+    "id": "t4_loop_x3_7",
+    "tier": 4,
+    "instruction": "Loop 7 times, adding 3 each iteration starting from 0, and exit with the final value (21) as status code.",
+    "expected_exit_code": 21,
+    "expected_stdout": null
+  },
+  {
+    "id": "t4_fib_10",
+    "tier": 4,
+    "instruction": "Compute the 10th Fibonacci number F(10)=55 (1-indexed: F(1)=1, F(2)=1) using a loop and exit with that value as status code.",
     "expected_exit_code": 55,
     "expected_stdout": null
   }

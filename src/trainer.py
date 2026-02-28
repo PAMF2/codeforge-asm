@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import inspect
@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from .best_of_n import BestOfN, BestOfNConfig
+from .mcts import MCTSConfig, MCTSLineSearch
 from .prompt_engine import PromptEngine, PromptItem
 from .reward import RewardPipeline
 from .utils import SYS_PROMPT, ensure_dir, sanitize_model_output
@@ -203,6 +204,18 @@ def maybe_build_train_bundle(cfg: RuntimeConfig) -> TrainBundle | None:
     return TrainBundle(model=model, tokenizer=tokenizer, optimizer=optimizer, generator=generator)
 
 
+def _build_mcts_searcher(cfg: RuntimeConfig, generator: Any, reward_pipeline: RewardPipeline) -> MCTSLineSearch:
+    mcts_raw = cfg.raw.get("mcts", {})
+    mcts_cfg = MCTSConfig(
+        simulations=int(mcts_raw.get("simulations", 32)),
+        max_lines=int(mcts_raw.get("max_lines", 30)),
+        branch_factor=int(mcts_raw.get("branch_factor", 4)),
+        exploration_constant=float(mcts_raw.get("exploration_constant", 1.414)),
+        max_depth=int(mcts_raw.get("max_depth", 15)),
+    )
+    return MCTSLineSearch(cfg=mcts_cfg, generator=generator, reward_pipeline=reward_pipeline)
+
+
 def _group_relative_weights(rows: list[dict[str, Any]]) -> list[float]:
     by_prompt: dict[str, list[int]] = {}
     for i, row in enumerate(rows):
@@ -383,7 +396,6 @@ def maybe_build_trl_bundle(
     per_device_bs = int(training.get("batch_size", 2))
     num_gens = int(training.get("generations_per_prompt", 16))
     if per_device_bs % max(1, num_gens) != 0:
-        # TRL requires generation_batch_size divisible by num_generations.
         gen_bs = int(math.ceil(per_device_bs / max(1, num_gens)) * max(1, num_gens))
         base_args["generation_batch_size"] = gen_bs
         print(
@@ -391,25 +403,10 @@ def maybe_build_trl_bundle(
             f"(batch_size={per_device_bs}, num_generations={num_gens})"
         )
     if torch is not None and not torch.cuda.is_available():
-        # TRL/Transformers defaults may assume bf16 on GPU. Force CPU-safe args.
-        base_args.update(
-            {
-                "use_cpu": True,
-                "bf16": False,
-                "fp16": False,
-            }
-        )
+        base_args.update({"use_cpu": True, "bf16": False, "fp16": False})
     elif torch is not None and torch.cuda.is_available():
-        # Prefer bf16 when supported; fallback to fp16 on older GPUs (e.g., T4).
         bf16_supported = bool(getattr(torch.cuda, "is_bf16_supported", lambda: False)())
-        base_args.update(
-            {
-                "use_cpu": False,
-                "bf16": bf16_supported,
-                "fp16": not bf16_supported,
-            }
-        )
-        # Enable cleaner DDP behavior when a job exposes multiple GPUs.
+        base_args.update({"use_cpu": False, "bf16": bf16_supported, "fp16": not bf16_supported})
         if torch.cuda.device_count() > 1:
             base_args["ddp_find_unused_parameters"] = False
 
@@ -516,6 +513,7 @@ def evaluate_candidates(
                 "ran": result.ran,
                 "correct": result.correct,
                 "stage_failed": result.stage_failed,
+                "source": "bon",
             }
         )
     return rows
@@ -549,6 +547,8 @@ def main() -> None:
     train_bundle = maybe_build_train_bundle(cfg)
     generator = train_bundle.generator if train_bundle is not None else DummyGenerator()
     best_of_n = BestOfN(generator=generator, cfg=bon_cfg)
+    mcts_searcher = _build_mcts_searcher(cfg, generator, reward_pipeline)
+    use_mcts_after = int(cfg.raw["training"].get("use_mcts_after_iteration", 999))
 
     batch_prompts_for_init = prompts.sample(cfg.prompts_per_iteration)
     trl_bundle = maybe_build_trl_bundle(
@@ -572,17 +572,27 @@ def main() -> None:
     for it in range(cfg.iterations):
         batch_prompts = prompts.sample(cfg.prompts_per_iteration)
         all_rows: list[dict[str, Any]] = []
+        using_mcts = it >= use_mcts_after
 
         for p in batch_prompts:
             user_prompt = f"{SYS_PROMPT}\n\nTask: {p.instruction}"
-            candidates = best_of_n.generate(user_prompt)
-            rows = evaluate_candidates(reward_pipeline, p, candidates, sample_prefix=f"it{it}-{p.id}")
-            all_rows.extend(rows)
+            if using_mcts:
+                mcts_rows = mcts_searcher.search(
+                    task=user_prompt,
+                    prompt_item=p,
+                    sample_prefix=f"it{it}-{p.id}",
+                )
+                all_rows.extend(mcts_rows)
+            else:
+                candidates = best_of_n.generate(user_prompt)
+                rows = evaluate_candidates(reward_pipeline, p, candidates, sample_prefix=f"it{it}-{p.id}")
+                all_rows.extend(rows)
 
         rewards = [r["reward"] for r in all_rows]
         avg_reward = sum(rewards) / max(1, len(rewards))
         success_assemble = sum(1 for r in all_rows if r["assembled"]) / max(1, len(all_rows))
         success_correct = sum(1 for r in all_rows if r["correct"]) / max(1, len(all_rows))
+        mcts_rows_count = sum(1 for r in all_rows if r.get("source") == "mcts")
 
         if backend == "trl":
             grpo_metrics = run_grpo_update_trl(trl_bundle)
@@ -594,6 +604,8 @@ def main() -> None:
             "avg_reward": avg_reward,
             "assemble_success_rate": success_assemble,
             "correctness_rate": success_correct,
+            "mcts_rows": mcts_rows_count,
+            "source": "mcts" if using_mcts else "bon",
             **grpo_metrics,
         }
 

@@ -399,6 +399,19 @@ def maybe_build_trl_bundle(
                 "fp16": False,
             }
         )
+    elif torch is not None and torch.cuda.is_available():
+        # Prefer bf16 when supported; fallback to fp16 on older GPUs (e.g., T4).
+        bf16_supported = bool(getattr(torch.cuda, "is_bf16_supported", lambda: False)())
+        base_args.update(
+            {
+                "use_cpu": False,
+                "bf16": bf16_supported,
+                "fp16": not bf16_supported,
+            }
+        )
+        # Enable cleaner DDP behavior when a job exposes multiple GPUs.
+        if torch.cuda.device_count() > 1:
+            base_args["ddp_find_unused_parameters"] = False
 
     grpo_cfg_kwargs = _filter_kwargs(GRPOConfig, base_args)
     grpo_cfg = GRPOConfig(**grpo_cfg_kwargs)

@@ -1,0 +1,31 @@
+﻿# Project Tree
+
+```text
+codeforge-asm/
+  configs/
+    grpo_config.yaml
+  demo/
+    app.py
+  docs/
+    ARCHITECTURE.md
+  eval/
+    evaluate.py
+  notebooks/
+    train.ipynb
+  prompts/
+    dataset.json
+  src/
+    __init__.py
+    best_of_n.py
+    mcts.py
+    prompt_engine.py
+    reward.py
+    trainer.py
+    utils.py
+  .editorconfig
+  .env.example
+  .gitignore
+  Makefile
+  README.md
+  requirements.txt
+```

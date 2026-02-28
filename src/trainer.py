@@ -3,6 +3,7 @@
 import argparse
 import inspect
 import json
+import math
 import os
 import random
 from dataclasses import dataclass
@@ -379,6 +380,25 @@ def maybe_build_trl_bundle(
         "logging_steps": 1,
         "report_to": "wandb" if bool(training.get("use_wandb", True)) and wandb is not None else "none",
     }
+    per_device_bs = int(training.get("batch_size", 2))
+    num_gens = int(training.get("generations_per_prompt", 16))
+    if per_device_bs % max(1, num_gens) != 0:
+        # TRL requires generation_batch_size divisible by num_generations.
+        gen_bs = int(math.ceil(per_device_bs / max(1, num_gens)) * max(1, num_gens))
+        base_args["generation_batch_size"] = gen_bs
+        print(
+            f"[CodeForge] Adjusted generation_batch_size to {gen_bs} "
+            f"(batch_size={per_device_bs}, num_generations={num_gens})"
+        )
+    if torch is not None and not torch.cuda.is_available():
+        # TRL/Transformers defaults may assume bf16 on GPU. Force CPU-safe args.
+        base_args.update(
+            {
+                "use_cpu": True,
+                "bf16": False,
+                "fp16": False,
+            }
+        )
 
     grpo_cfg_kwargs = _filter_kwargs(GRPOConfig, base_args)
     grpo_cfg = GRPOConfig(**grpo_cfg_kwargs)

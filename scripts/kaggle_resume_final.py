@@ -62,7 +62,8 @@ def main() -> int:
     # Minimal deps for resume run.
     sh(
         "pip install -q -U pyyaml wandb accelerate datasets peft trl "
-        "huggingface_hub mistralai transformers 'bitsandbytes>=0.46.1'"
+        "huggingface_hub mistralai transformers sentencepiece tiktoken "
+        "'bitsandbytes>=0.46.1'"
     )
 
     # Load secrets from Kaggle.
@@ -74,7 +75,15 @@ def main() -> int:
         os.environ["WANDB_API_KEY"] = get_secret("WANDB _API_KEY")
 
     resume_cfg = write_resume_config(repo_root)
-    sh(f"python train.py --config {resume_cfg}")
+    try:
+        sh(f"python train.py --config {resume_cfg}")
+    except subprocess.CalledProcessError:
+        # Fallback: if adapter repo tokenizer is incomplete, continue from base model.
+        print("[kaggle_resume_final] resume from hub adapter failed; falling back to base model.")
+        cfg = yaml.safe_load(resume_cfg.read_text(encoding="utf-8"))
+        cfg["model"]["name_or_path"] = "mistralai/Ministral-8B-Instruct-2410"
+        resume_cfg.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+        sh(f"python train.py --config {resume_cfg}")
     return 0
 
 

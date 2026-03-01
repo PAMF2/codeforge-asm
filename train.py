@@ -42,6 +42,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/grpo_config.yaml")
     parser.add_argument("--ensure-system-deps", action="store_true")
+    parser.add_argument("--start-iter", type=int, default=0,
+                        help="Resume from this iteration (loads iter_{N-1} checkpoint)")
     args = parser.parse_args()
 
     if args.ensure_system_deps:
@@ -50,7 +52,8 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
 
-    cmd = [sys.executable, "-m", "src.trainer", "--config", args.config]
+    cmd = [sys.executable, "-m", "src.trainer", "--config", args.config,
+           "--start-iter", str(args.start_iter)]
     return subprocess.run(cmd, env=env, check=False).returncode
 
 

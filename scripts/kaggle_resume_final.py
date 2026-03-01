@@ -159,42 +159,74 @@ def write_full_config(repo_root: Path, start_iter: int, gpu_count: int = 2) -> P
 
 def _patch_torchvision_compat() -> None:
     """
-    Guard the unconditional `from torchvision.transforms import InterpolationMode`
-    in transformers/image_utils.py.
+    Two-layer fix for the torchvision circular-import bug that crashes
+    MinistralForCausalLM loading in transformers 5.x.
 
-    Root cause: transformers 5.x imports torchvision at module level in image_utils.py.
-    When torchvision has a circular-import bug in _meta_registrations.py
-    (AttributeError: partially initialized module 'torchvision' has no attribute
-    'extension'), the entire MinistralForCausalLM load chain crashes.
+    Root cause (torchvision/_meta_registrations.py):
+      torchvision/__init__.py imports _meta_registrations.
+      _meta_registrations applies @register_meta("roi_align") at module load time.
+      The decorator wrapper calls `torchvision.extension._has_ops()`.
+      But torchvision.extension is not yet loaded (we are still inside __init__.py).
+      → AttributeError: partially initialized module 'torchvision' has no attribute
+        'extension' (most likely due to a circular import)
 
-    Ministral-8B is text-only — InterpolationMode is never called at runtime.
-    A stub IntEnum class is sufficient to let the import chain succeed.
+    Fix 1 (root cause): patch _meta_registrations.py to guard with hasattr().
+      `if torchvision.extension._has_ops():`
+      → `if hasattr(torchvision, 'extension') and torchvision.extension._has_ops():`
+      This lets torchvision initialize cleanly.  The ROI-align registration is skipped
+      during the circular phase, which is harmless for a text-only training run.
+
+    Fix 2 (fallback): if Fix 1 didn't apply (different torchvision version), guard
+      the unconditional `from torchvision.transforms import InterpolationMode` in
+      transformers/image_utils.py with try/except + stub enum.
+      Ministral-8B is text-only — the real InterpolationMode is never called.
     """
+    import importlib.util as _ilu
+
+    # ── Fix 1: torchvision/_meta_registrations.py (root cause) ──────────────
     try:
-        import importlib.util
-        spec = importlib.util.find_spec("transformers")
-        if not spec or not spec.origin:
-            print("[fix_tv] transformers package not found — skip", flush=True)
-            return
-        target = Path(spec.origin).parent / "image_utils.py"
+        tv_spec = _ilu.find_spec("torchvision")
+        if tv_spec and tv_spec.origin:
+            meta_path = Path(tv_spec.origin).parent / "_meta_registrations.py"
+            if meta_path.exists():
+                text = meta_path.read_text(encoding="utf-8")
+                old = "if torchvision.extension._has_ops():"
+                new = "if hasattr(torchvision, 'extension') and torchvision.extension._has_ops():"
+                count = text.count(old)
+                if count and new not in text:
+                    meta_path.write_text(text.replace(old, new), encoding="utf-8")
+                    print(f"[fix_tv] patched torchvision/_meta_registrations.py ({count} sites) ✓", flush=True)
+                else:
+                    print("[fix_tv] _meta_registrations.py already patched or pattern absent — skip", flush=True)
+        else:
+            print("[fix_tv] torchvision not found for root-cause patch — skipping Fix 1", flush=True)
     except Exception as exc:
-        print(f"[fix_tv] could not locate transformers: {exc} — skip", flush=True)
+        print(f"[fix_tv] Fix 1 failed ({exc}) — continuing to Fix 2", flush=True)
+
+    # ── Fix 2: transformers/image_utils.py (fallback guard) ──────────────────
+    try:
+        tf_spec = _ilu.find_spec("transformers")
+        if not tf_spec or not tf_spec.origin:
+            print("[fix_tv] transformers not found — skip Fix 2", flush=True)
+            return
+        target = Path(tf_spec.origin).parent / "image_utils.py"
+    except Exception as exc:
+        print(f"[fix_tv] could not locate transformers: {exc} — skip Fix 2", flush=True)
         return
 
     if not target.exists():
-        print(f"[fix_tv] {target} not found — skip", flush=True)
+        print(f"[fix_tv] {target} not found — skip Fix 2", flush=True)
         return
 
     text = target.read_text(encoding="utf-8")
     old = "from torchvision.transforms import InterpolationMode"
     if old not in text:
-        print("[fix_tv] import already absent or guarded — skip", flush=True)
+        print("[fix_tv] Fix 2: import absent or already guarded — skip", flush=True)
         return
 
     idx = text.find(old)
-    ctx = text[max(0, idx - 40): idx + len(old) + 60]
-    if "except" in ctx or "try:" in ctx:
-        print("[fix_tv] already patched — skip", flush=True)
+    if "except" in text[max(0, idx - 40): idx + len(old) + 60]:
+        print("[fix_tv] Fix 2: already patched — skip", flush=True)
         return
 
     new = (
@@ -209,7 +241,7 @@ def _patch_torchvision_compat() -> None:
         "        LANCZOS = 1"
     )
     target.write_text(text.replace(old, new), encoding="utf-8")
-    print(f"[fix_tv] patched {target} ✓", flush=True)
+    print(f"[fix_tv] Fix 2: patched {target} ✓", flush=True)
 
 
 def start_vllm_server(model_name: str, gpu_count: int, hf_token: str) -> "subprocess.Popen | None":

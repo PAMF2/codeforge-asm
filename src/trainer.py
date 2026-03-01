@@ -320,16 +320,26 @@ def maybe_build_trl_bundle(
     output_dir = artifacts_dir / "trl"
     ensure_dir(output_dir)
 
+    use_vllm = bool(training.get("use_vllm", False))
     base_args: dict[str, Any] = {
         "output_dir": str(output_dir),
         "learning_rate": float(training.get("learning_rate", 5e-6)),
         "per_device_train_batch_size": int(training.get("batch_size", 2)),
         "gradient_accumulation_steps": int(training.get("gradient_accumulation_steps", 4)),
+        "num_train_epochs": int(training.get("num_train_epochs", 1)),
         "num_generations": int(training.get("generations_per_prompt", 16)),
         "max_completion_length": int(training.get("max_new_tokens", 256)),
+        "temperature": float(training.get("temperature", 0.8)),
         "beta": float(training.get("kl_beta", 0.1)),
         "logging_steps": 1,
         "report_to": "wandb" if bool(training.get("use_wandb", True)) and wandb is not None else "none",
+        # vLLM fast generation — 5-10x faster than HF generate on large batches.
+        # With tensor_parallel_size=2 on 2x T4: vLLM shards across both GPUs (8GB each),
+        # leaving ~7GB per GPU for the 4-bit training model.
+        "use_vllm": use_vllm,
+        "vllm_tensor_parallel_size": int(training.get("vllm_tensor_parallel_size", 1)),
+        "vllm_gpu_memory_utilization": float(training.get("vllm_gpu_memory_utilization", 0.4)),
+        "vllm_max_model_len": int(training.get("vllm_max_model_len", 512)),
     }
     per_device_bs = int(training.get("batch_size", 2))
     num_gens = int(training.get("generations_per_prompt", 16))
@@ -436,26 +446,25 @@ def evaluate_candidates(
     candidates: list[str],
     sample_prefix: str,
 ) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for idx, asm in enumerate(candidates):
-        sample_id = f"{sample_prefix}-{idx}"
-        result = reward_pipeline.evaluate(prompt_item, asm, sample_id)
-        rows.append(
-            {
-                "prompt_id": prompt_item.id,
-                "instruction": prompt_item.instruction,
-                "tier": prompt_item.tier,
-                "asm": asm,
-                "reward": result.reward,
-                "assembled": result.assembled,
-                "linked": result.linked,
-                "ran": result.ran,
-                "correct": result.correct,
-                "stage_failed": result.stage_failed,
-                "source": "bon",
-            }
-        )
-    return rows
+    # Build batch and evaluate in parallel (ThreadPoolExecutor inside evaluate_batch)
+    items = [(prompt_item, asm, f"{sample_prefix}-{idx}") for idx, asm in enumerate(candidates)]
+    results = reward_pipeline.evaluate_batch(items, workers=min(8, len(items)))
+    return [
+        {
+            "prompt_id": prompt_item.id,
+            "instruction": prompt_item.instruction,
+            "tier": prompt_item.tier,
+            "asm": asm,
+            "reward": result.reward,
+            "assembled": result.assembled,
+            "linked": result.linked,
+            "ran": result.ran,
+            "correct": result.correct,
+            "stage_failed": result.stage_failed,
+            "source": "bon",
+        }
+        for asm, result in zip(candidates, results)
+    ]
 
 
 def _per_tier_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
@@ -533,28 +542,37 @@ def maybe_build_train_bundle(cfg: RuntimeConfig, resume_from: str | None = None)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    device_map = model_cfg.get("device_map", "auto")
+    # Under DDP (accelerate launch --num_processes N), LOCAL_RANK is set.
+    # In that case accelerate handles device placement — don't use device_map.
+    is_ddp = os.environ.get("LOCAL_RANK") is not None
+    device_map = None if is_ddp else model_cfg.get("device_map", "auto")
     max_memory = None
-    if torch is not None and torch.cuda.is_available():
+    if not is_ddp and torch is not None and torch.cuda.is_available():
         gpu_count = torch.cuda.device_count()
         print(f"[CodeForge] CUDA detected: {gpu_count} GPU(s)")
         if gpu_count > 1:
             per_gpu_gb = int(model_cfg.get("max_memory_per_gpu_gb", 14))
             max_memory = {i: f"{per_gpu_gb}GiB" for i in range(gpu_count)}
-            # keep some room on CPU for offloaded buffers
             max_memory["cpu"] = "64GiB"
-            print(f"[CodeForge] Multi-GPU enabled with device_map={device_map}, max_memory={max_memory}")
+            print(f"[CodeForge] Multi-GPU (model parallel) device_map={device_map}, max_memory={max_memory}")
+    elif is_ddp:
+        print(f"[CodeForge] DDP mode detected (LOCAL_RANK={os.environ['LOCAL_RANK']}); accelerate handles devices")
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        trust_remote_code=trust_remote_code,
-        device_map=device_map,
-        max_memory=max_memory,
-        quantization_config=quant_cfg,
-    )
+    # SDPA (scaled-dot-product attention) — faster than eager, works on all GPUs
+    # Flash Attention 2 requires Ampere+ (SM80+); T4 is SM75, so we use sdpa.
+    model_load_kwargs: dict[str, Any] = {
+        "trust_remote_code": trust_remote_code,
+        "device_map": device_map,
+        "max_memory": max_memory,
+        "quantization_config": quant_cfg,
+    }
+    attn_impl = str(model_cfg.get("attn_implementation", "sdpa"))
+    if attn_impl != "eager":
+        model_load_kwargs["attn_implementation"] = attn_impl
+
+    model = AutoModelForCausalLM.from_pretrained(model_name, **model_load_kwargs)
 
     if resume_from:
-        # Load existing LoRA adapter from checkpoint
         from peft import PeftModel
         print(f"[CodeForge] Resuming LoRA from: {resume_from}")
         model = PeftModel.from_pretrained(model, resume_from, is_trainable=True)
@@ -570,6 +588,16 @@ def maybe_build_train_bundle(cfg: RuntimeConfig, resume_from: str | None = None)
         )
         model = get_peft_model(model, lora_cfg)
         model.print_trainable_parameters()
+
+    # Gradient checkpointing: trades compute for memory, enables larger effective batch
+    if bool(training.get("gradient_checkpointing", True)):
+        try:
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+            print("[CodeForge] Gradient checkpointing enabled")
+        except Exception as gc_err:
+            print(f"[CodeForge] Gradient checkpointing skipped: {gc_err}")
 
     learning_rate = float(training.get("learning_rate", 5e-6))
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)

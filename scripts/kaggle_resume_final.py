@@ -106,7 +106,7 @@ def download_checkpoints_from_hub(
     return max_iter
 
 
-def write_full_config(repo_root: Path, start_iter: int) -> Path:
+def write_full_config(repo_root: Path, start_iter: int, gpu_count: int = 2) -> Path:
     cfg_path = repo_root / "configs" / "grpo_config.yaml"
     out_path = repo_root / "configs" / "grpo_config.kaggle.resume.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
@@ -117,6 +117,10 @@ def write_full_config(repo_root: Path, start_iter: int) -> Path:
     cfg["model"]["trust_remote_code"] = True
     cfg["model"]["device_map"] = "balanced"
     cfg["model"]["max_memory_per_gpu_gb"] = 14
+    # SDPA: faster than eager attention, works on T4 (SM75).
+    # Flash Attention 2 requires Ampere (SM80+) — not available on T4.
+    cfg["model"]["attn_implementation"] = "sdpa"
+    cfg["model"]["gradient_checkpointing"] = True
 
     tr = cfg["training"]
     tr["dry_run"] = False
@@ -127,18 +131,31 @@ def write_full_config(repo_root: Path, start_iter: int) -> Path:
     tr["hub_fallback_repo_id"] = "PAMF2/codeforge"
     tr["hub_private"] = True
 
-    # Full training settings
+    # ── Speed optimizations ──────────────────────────────────────────
+    # num_train_epochs=1: 3x fewer gradient steps per iteration vs default 3.
+    # max_new_tokens=128: assembly programs are short; 256 wastes generation time.
+    # vLLM: 5-10x faster generation than HF generate().
+    #   tensor_parallel_size=2 shards model across both T4s (8GB/GPU in fp16),
+    #   leaving ~7GB per GPU for the 4-bit training model (~4.5GB).
+    #   gpu_memory_utilization=0.45 so vLLM + training fit on same GPUs.
+    tr["num_train_epochs"] = 1
+    tr["max_new_tokens"] = 128
+    tr["use_vllm"] = True
+    tr["vllm_tensor_parallel_size"] = gpu_count
+    tr["vllm_gpu_memory_utilization"] = 0.45
+    tr["vllm_max_model_len"] = 512
+
+    # ── Training config ───────────────────────────────────────────────
     tr["iterations"] = 10
     tr["prompts_per_iteration"] = 20
     tr["generations_per_prompt"] = 8
-    tr["max_new_tokens"] = 256
-    tr["batch_size"] = 1
-    tr["gradient_accumulation_steps"] = 8
+    tr["batch_size"] = 2
+    tr["gradient_accumulation_steps"] = 4
     tr["use_random_sampling"] = True
     tr["use_mcts_after_iteration"] = 2
 
     out_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
-    print(f"[kaggle_resume_final] config written to {out_path}  (start_iter={start_iter})", flush=True)
+    print(f"[kaggle_resume_final] config written → {out_path}  (start_iter={start_iter})", flush=True)
     return out_path
 
 
@@ -150,12 +167,16 @@ def main() -> int:
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
     sh("nvidia-smi || true", check=False)
 
-    # 2. Install dependencies
+    # 2. Install dependencies (vllm for fast generation, accelerate for DDP)
     sh(
         "pip install -q -U pyyaml wandb accelerate datasets peft trl "
         "huggingface_hub mistralai transformers sentencepiece tiktoken "
         "'bitsandbytes>=0.46.1'"
     )
+    # vLLM: fast generation engine (5-10x vs HF generate).
+    # Install separately so a vLLM failure doesn't block the rest.
+    sh("pip install -q vllm || echo '[kaggle_resume_final] vllm install failed, will use HF generate'",
+       check=False)
 
     # 3. Load Kaggle secrets
     os.environ["HF_TOKEN"] = get_secret("HF_TOKEN")
@@ -171,7 +192,15 @@ def main() -> int:
     # 4. Install system deps (nasm/binutils)
     sh("apt-get update -qq && apt-get install -y -qq nasm binutils", check=False)
 
-    # 5. Download existing LoRA checkpoints from HF
+    # 5. Detect GPU count
+    try:
+        import torch
+        gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    except Exception:
+        gpu_count = int(os.environ.get("CUDA_VISIBLE_DEVICES", "0,1").count(",") + 1)
+    print(f"[kaggle_resume_final] GPU count: {gpu_count}", flush=True)
+
+    # 6. Download existing LoRA checkpoints from HF
     cfg_base = yaml.safe_load((repo_root / "configs" / "grpo_config.yaml").read_text())
     checkpoints_dir = Path(cfg_base["paths"]["checkpoints_dir"])
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
@@ -184,17 +213,29 @@ def main() -> int:
     start_iter = max(0, max_saved_iter + 1)
     print(f"[kaggle_resume_final] max_saved_iter={max_saved_iter}  start_iter={start_iter}", flush=True)
 
-    # 6. Write config & run
-    cfg_out = write_full_config(repo_root, start_iter)
+    # 7. Write optimized config
+    cfg_out = write_full_config(repo_root, start_iter, gpu_count=gpu_count)
 
-    cmd = [
-        sys.executable, "train.py",
-        "--config", str(cfg_out),
-        "--start-iter", str(start_iter),
-        "--ensure-system-deps",
-    ]
-    print(f"[kaggle_resume_final] running: {' '.join(cmd)}", flush=True)
-    return subprocess.run(cmd, cwd=str(repo_root)).returncode
+    def run_training(cfg_path: Path, extra_args: list[str] | None = None) -> int:
+        cmd = [
+            sys.executable, "train.py",
+            "--config", str(cfg_path),
+            "--start-iter", str(start_iter),
+            "--ensure-system-deps",
+        ] + (extra_args or [])
+        print(f"[kaggle_resume_final] running: {' '.join(cmd)}", flush=True)
+        return subprocess.run(cmd, cwd=str(repo_root)).returncode
+
+    # 8. Run — try with vLLM, fall back to HF generate on failure
+    rc = run_training(cfg_out)
+    if rc != 0:
+        print("[kaggle_resume_final] Training failed (possibly vLLM OOM). Retrying without vLLM...", flush=True)
+        cfg = yaml.safe_load(cfg_out.read_text())
+        cfg["training"]["use_vllm"] = False
+        cfg_out.write_text(yaml.safe_dump(cfg, sort_keys=False))
+        rc = run_training(cfg_out)
+
+    return rc
 
 
 if __name__ == "__main__":

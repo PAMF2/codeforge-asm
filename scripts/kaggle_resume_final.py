@@ -157,6 +157,61 @@ def write_full_config(repo_root: Path, start_iter: int, gpu_count: int = 2) -> P
     return out_path
 
 
+def _patch_torchvision_compat() -> None:
+    """
+    Guard the unconditional `from torchvision.transforms import InterpolationMode`
+    in transformers/image_utils.py.
+
+    Root cause: transformers 5.x imports torchvision at module level in image_utils.py.
+    When torchvision has a circular-import bug in _meta_registrations.py
+    (AttributeError: partially initialized module 'torchvision' has no attribute
+    'extension'), the entire MinistralForCausalLM load chain crashes.
+
+    Ministral-8B is text-only — InterpolationMode is never called at runtime.
+    A stub IntEnum class is sufficient to let the import chain succeed.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("transformers")
+        if not spec or not spec.origin:
+            print("[fix_tv] transformers package not found — skip", flush=True)
+            return
+        target = Path(spec.origin).parent / "image_utils.py"
+    except Exception as exc:
+        print(f"[fix_tv] could not locate transformers: {exc} — skip", flush=True)
+        return
+
+    if not target.exists():
+        print(f"[fix_tv] {target} not found — skip", flush=True)
+        return
+
+    text = target.read_text(encoding="utf-8")
+    old = "from torchvision.transforms import InterpolationMode"
+    if old not in text:
+        print("[fix_tv] import already absent or guarded — skip", flush=True)
+        return
+
+    idx = text.find(old)
+    ctx = text[max(0, idx - 40): idx + len(old) + 60]
+    if "except" in ctx or "try:" in ctx:
+        print("[fix_tv] already patched — skip", flush=True)
+        return
+
+    new = (
+        "try:\n"
+        "    from torchvision.transforms import InterpolationMode\n"
+        "except Exception:  # torchvision circular-import bug in some versions\n"
+        "    from enum import IntEnum\n"
+        "    class InterpolationMode(IntEnum):  # stub — text models don't use this\n"
+        "        NEAREST = 0\n"
+        "        BILINEAR = 2\n"
+        "        BICUBIC = 3\n"
+        "        LANCZOS = 1"
+    )
+    target.write_text(text.replace(old, new), encoding="utf-8")
+    print(f"[fix_tv] patched {target} ✓", flush=True)
+
+
 def start_vllm_server(model_name: str, gpu_count: int, hf_token: str) -> "subprocess.Popen | None":
     """
     Start `trl vllm-serve` as a background process, then poll /health until ready.
@@ -245,6 +300,13 @@ def main() -> int:
         "huggingface_hub "
         "'transformers>=5.0,<6.0'"  # guard: prevents TRL from downgrading 5.2.0 → 4.x
     )
+
+    # 2b. Patch transformers image_utils.py to guard the torchvision import.
+    #     transformers 5.x imports torchvision unconditionally; some torchvision
+    #     versions have a circular-import bug in _meta_registrations.py that
+    #     crashes the MinistralForCausalLM load chain.  Text models don't need
+    #     the real InterpolationMode, so a stub enum is sufficient.
+    _patch_torchvision_compat()
 
     # 3. Load Kaggle secrets
     os.environ["HF_TOKEN"] = get_secret("HF_TOKEN")

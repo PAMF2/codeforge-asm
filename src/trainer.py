@@ -105,20 +105,47 @@ class HFTextGenerator:
         self.tokenizer = tokenizer
         self._ensure_lm_head_dtype()
 
+    def _find_lm_head(self) -> Any | None:
+        # Plain HF model path
+        lm_head = getattr(self.model, "lm_head", None)
+        if lm_head is not None and hasattr(lm_head, "weight"):
+            return lm_head
+
+        # PEFT wrapper path
+        base = getattr(self.model, "base_model", None)
+        if base is not None:
+            lm_head = getattr(base, "lm_head", None)
+            if lm_head is not None and hasattr(lm_head, "weight"):
+                return lm_head
+            inner = getattr(base, "model", None)
+            lm_head = getattr(inner, "lm_head", None) if inner is not None else None
+            if lm_head is not None and hasattr(lm_head, "weight"):
+                return lm_head
+
+        # Fallback search
+        for name, module in self.model.named_modules():
+            if name.endswith("lm_head") and hasattr(module, "weight"):
+                return module
+        return None
+
     def _ensure_lm_head_dtype(self) -> None:
         """Keep lm_head dtype aligned with hidden states for 4-bit + PEFT generation."""
         if torch is None:
             return
-        lm_head = getattr(self.model, "lm_head", None)
+        lm_head = self._find_lm_head()
         if lm_head is None or not hasattr(lm_head, "weight"):
             return
         try:
-            target_dtype = next(self.model.parameters()).dtype
+            # T4 + 4-bit QLoRA path should run generation in fp16.
+            target_dtype = torch.float16 if torch.cuda.is_available() else next(self.model.parameters()).dtype
             if lm_head.weight.dtype != target_dtype:
+                old_dtype = lm_head.weight.dtype
                 lm_head.to(dtype=target_dtype)
+                if getattr(lm_head, "bias", None) is not None and lm_head.bias.dtype != target_dtype:
+                    lm_head.bias.data = lm_head.bias.data.to(target_dtype)
                 print(
                     f"[CodeForge] Aligned lm_head dtype: "
-                    f"{lm_head.weight.dtype} -> {target_dtype}"
+                    f"{old_dtype} -> {target_dtype}"
                 )
         except Exception as exc:
             print(f"[CodeForge] lm_head dtype alignment skipped: {exc}")

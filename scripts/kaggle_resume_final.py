@@ -275,6 +275,7 @@ def main() -> int:
 
     # 1. Expose both T4s
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+    os.environ["TRANSFORMERS_NO_TORCHVISION"] = "1"
     sh("nvidia-smi || true", check=False)
 
     # 2. Install training-specific packages.
@@ -296,8 +297,8 @@ def main() -> int:
         "'transformers>=5.0,<6.0'"  # MUST be >=5.0 for MinistralForCausalLM
     )
 
-    # 3. Fix torchvision circular-import bug (blocks MinistralForCausalLM otherwise).
-    _patch_torchvision_compat()
+    # 3. Text-only training; remove torchvision to avoid torch/vision operator mismatch.
+    sh("pip uninstall -y torchvision", check=False)
 
     # 4. Load Kaggle secrets
     os.environ["HF_TOKEN"] = get_secret("HF_TOKEN")

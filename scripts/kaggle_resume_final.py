@@ -225,8 +225,13 @@ def main() -> int:
     sh("nvidia-smi || true", check=False)
 
     # 2. Install only training-specific packages.
-    #    DO NOT touch transformers/torch/tokenizers — Kaggle ships transformers 5.2.0
-    #    which has MinistralForCausalLM. Downgrading it breaks model loading.
+    #    Pin transformers>=5.0 so pip CANNOT downgrade from Kaggle's 5.2.0:
+    #    TRL's dependency metadata says transformers<5 on older releases, which
+    #    causes a silent downgrade that removes MinistralForCausalLM.
+    #    By declaring >=5.0 here, pip must find a TRL that co-exists with 5.x
+    #    or raise a visible conflict — either outcome is better than silent failure.
+    #    DO NOT touch torch/tokenizers — Kaggle's torch 2.10.0 is incompatible
+    #    with vLLM and must stay as-is.
     sh(
         "pip install -q "
         "pyyaml wandb "
@@ -237,7 +242,8 @@ def main() -> int:
         "'mistralai>=1.0,<2.0' "
         "'sentencepiece>=0.2.0' "
         "datasets "
-        "huggingface_hub"
+        "huggingface_hub "
+        "'transformers>=5.0,<6.0'"  # guard: prevents TRL from downgrading 5.2.0 → 4.x
     )
 
     # 3. Load Kaggle secrets

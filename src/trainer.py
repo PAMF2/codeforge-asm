@@ -533,10 +533,23 @@ def maybe_build_train_bundle(cfg: RuntimeConfig) -> TrainBundle | None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    device_map = model_cfg.get("device_map", "auto")
+    max_memory = None
+    if torch is not None and torch.cuda.is_available():
+        gpu_count = torch.cuda.device_count()
+        print(f"[CodeForge] CUDA detected: {gpu_count} GPU(s)")
+        if gpu_count > 1:
+            per_gpu_gb = int(model_cfg.get("max_memory_per_gpu_gb", 14))
+            max_memory = {i: f"{per_gpu_gb}GiB" for i in range(gpu_count)}
+            # keep some room on CPU for offloaded buffers
+            max_memory["cpu"] = "64GiB"
+            print(f"[CodeForge] Multi-GPU enabled with device_map={device_map}, max_memory={max_memory}")
+
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         trust_remote_code=trust_remote_code,
-        device_map="auto",
+        device_map=device_map,
+        max_memory=max_memory,
         quantization_config=quant_cfg,
     )
 

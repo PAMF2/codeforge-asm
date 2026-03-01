@@ -52,6 +52,8 @@ def write_kaggle_config(repo_root: Path) -> Path:
     cfg["model"]["name_or_path"] = "mistralai/Ministral-8B-Instruct-2410"
     cfg["model"]["load_in_4bit"] = True
     cfg["model"]["trust_remote_code"] = True
+    cfg["model"]["device_map"] = "balanced"
+    cfg["model"]["max_memory_per_gpu_gb"] = 14
 
     tr = cfg["training"]
     tr["dry_run"] = False
@@ -75,7 +77,7 @@ def main() -> int:
     repo_root = Path("/kaggle/working/codeforge-asm")
 
     # Ensure Kaggle dual-T4 setup is visible to torch/accelerate.
-    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0,1")
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
     sh("nvidia-smi || true")
 
     # System + Python deps

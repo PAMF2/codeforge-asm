@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import os
@@ -36,14 +36,13 @@ def get_secret_or_env(name: str) -> str | None:
 
 def install_python_stack() -> None:
     # Keep this stack consistent to avoid numpy/scipy/sklearn and torchvision issues.
-    # CRITICAL: transformers>=5.0 is REQUIRED for MinistralForCausalLM.
-    # transformers==4.57.1 does NOT have this class — do NOT pin to 4.x.
+    # Keep a stable set that works on Kaggle without resolver conflicts.
     sh(
         "pip install -q --upgrade --force-reinstall "
         "'numpy==2.1.3' "
         "'scipy==1.14.1' "
         "'scikit-learn==1.5.2' "
-        "'transformers>=5.0,<6.0' "  # must be >=5.0 — MinistralForCausalLM only exists in 5.x
+        "'transformers==4.57.1' "
         "'tokenizers>=0.22,<0.23' "
         "'trl>=0.21,<0.24' "
         "'accelerate>=1.8,<1.12' "
@@ -91,7 +90,7 @@ def check_ministral_import() -> None:
         "    out.close(); sys.exit(0)\n"
         "except Exception:\n"
         "    tb = traceback.format_exc()\n"
-        "    log('IMPORT FAILED — full traceback:')\n"
+        "    log('IMPORT FAILED â€” full traceback:')\n"
         "    log(tb)\n"
         "    out.close()\n"
         "    log('Full trace: !cat /tmp/ministral_diag.txt')\n"
@@ -104,7 +103,7 @@ def check_ministral_import() -> None:
 def parse_iters(repo_files: list[str]) -> list[int]:
     out: set[int] = set()
     for path in repo_files:
-        m = re.match(r"^checkpoints/iter_(\\d+)/", path)
+        m = re.match(r"^checkpoints/iter_(\d+)/", path)
         if m:
             out.add(int(m.group(1)))
     return sorted(out)
@@ -145,7 +144,7 @@ def write_resume_config(cfg: dict[str, Any]) -> Path:
     cfg["model"]["trust_remote_code"] = True
     cfg["model"]["load_in_4bit"] = True
     # float16 required with 4-bit QLoRA + device_map: prevents lm_head fp32/fp16 mismatch.
-    # T4 (SM75) does NOT support bfloat16 — always use float16.
+    # T4 (SM75) does NOT support bfloat16 â€” always use float16.
     cfg["model"]["torch_dtype"] = "float16"
     cfg["model"]["device_map"] = "balanced"
     cfg["model"]["max_memory_per_gpu_gb"] = 14
@@ -223,3 +222,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

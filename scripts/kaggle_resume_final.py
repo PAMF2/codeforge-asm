@@ -224,30 +224,21 @@ def main() -> int:
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
     sh("nvidia-smi || true", check=False)
 
-    # 2. Install dependencies (vllm for fast generation, accelerate for DDP)
-    # Pin transformer stack compatible with vLLM 0.12.0
+    # 2. Install only training-specific packages.
+    #    DO NOT touch transformers/torch/tokenizers — Kaggle ships transformers 5.2.0
+    #    which has MinistralForCausalLM. Downgrading it breaks model loading.
     sh(
-        "pip install -q --upgrade --force-reinstall "
-        "'transformers==4.57.1' "
-        "'tokenizers>=0.22,<0.23' "
-        "'trl>=0.21,<0.24' "
-        "'accelerate>=1.8,<1.12' "
-        "'peft>=0.17,<0.19' "
-        "'huggingface_hub>=0.34,<1.0' "
-        "'pyyaml>=6.0.2' "
-        "'wandb>=0.20,<0.26' "
-        "'datasets>=4.0,<5.0' "
+        "pip install -q "
+        "pyyaml wandb "
+        "'trl>=0.12' "
+        "'accelerate>=1.0' "
+        "'peft>=0.10' "
+        "'bitsandbytes>=0.46.1' "
         "'mistralai>=1.0,<2.0' "
         "'sentencepiece>=0.2.0' "
-        "'tiktoken>=0.7.0' "
-        "'bitsandbytes>=0.46.1' "
-        "'protobuf<6' "
-        "'grpcio-status<1.72'"
+        "datasets "
+        "huggingface_hub"
     )
-    # vLLM is incompatible with Kaggle's current torch 2.10.0:
-    #   vllm==0.12.0 requires torch==2.9.0 (TRL-compatible but breaks on torch 2.10)
-    #   vllm==0.16.0 (Kaggle default) not supported by TRL's GRPOTrainer
-    # → Using HF generate; compensating with reduced max_new_tokens + prompts_per_iteration.
 
     # 3. Load Kaggle secrets
     os.environ["HF_TOKEN"] = get_secret("HF_TOKEN")

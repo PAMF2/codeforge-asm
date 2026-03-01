@@ -147,6 +147,19 @@ class HFTextGenerator:
                     f"[CodeForge] Aligned lm_head dtype: "
                     f"{old_dtype} -> {target_dtype}"
                 )
+            # Some PEFT + accelerate combinations keep lm_head in fp32 while activations are fp16.
+            # Guard forward to cast activations to lm_head dtype and avoid runtime dtype mismatch.
+            if not getattr(lm_head, "_codeforge_dtype_guard", False):
+                old_forward = lm_head.forward
+
+                def guarded_forward(x: Any) -> Any:
+                    w = getattr(lm_head, "weight", None)
+                    if w is not None and hasattr(x, "dtype") and x.dtype != w.dtype:
+                        x = x.to(w.dtype)
+                    return old_forward(x)
+
+                lm_head.forward = guarded_forward  # type: ignore[assignment]
+                lm_head._codeforge_dtype_guard = True
         except Exception as exc:
             print(f"[CodeForge] lm_head dtype alignment skipped: {exc}")
 

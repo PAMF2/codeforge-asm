@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import yaml
@@ -134,15 +135,16 @@ def write_full_config(repo_root: Path, start_iter: int, gpu_count: int = 2) -> P
     # ── Speed optimizations ──────────────────────────────────────────
     # num_train_epochs=1: 3x fewer gradient steps per iteration vs default 3.
     # max_new_tokens=128: assembly programs are short; 256 wastes generation time.
-    # vLLM: 5-10x faster generation than HF generate().
-    #   tensor_parallel_size=2 shards model across both T4s (8GB/GPU in fp16),
-    #   leaving ~7GB per GPU for the 4-bit training model (~4.5GB).
-    #   gpu_memory_utilization=0.45 so vLLM + training fit on same GPUs.
+    # Strict vLLM mode in this launcher.
+    # gpu_memory_utilization=0.60: vLLM fp16 8B needs 8GB/GPU (tensor_parallel=2),
+    #   9GB/GPU allocated (1GB KV cache). Remaining 6GB/GPU for 4-bit training model.
     tr["num_train_epochs"] = 1
     tr["max_new_tokens"] = 128
     tr["use_vllm"] = True
+    tr["vllm_server_host"] = "127.0.0.1"
+    tr["vllm_server_port"] = 8000
     tr["vllm_tensor_parallel_size"] = gpu_count
-    tr["vllm_gpu_memory_utilization"] = 0.45
+    tr["vllm_gpu_memory_utilization"] = 0.60
     tr["vllm_max_model_len"] = 512
 
     # ── Training config ───────────────────────────────────────────────
@@ -159,6 +161,65 @@ def write_full_config(repo_root: Path, start_iter: int, gpu_count: int = 2) -> P
     return out_path
 
 
+def start_vllm_server(model_name: str, gpu_count: int, hf_token: str) -> "subprocess.Popen | None":
+    """
+    Start `trl vllm-serve` as a background process, then poll /health until ready.
+
+    Why a separate process: TRL's GRPOTrainer(use_vllm=True) expects the server
+    already running at port 8000. It does NOT start it — if nothing is there it
+    times out after 240s and crashes.
+
+    Memory math (2x T4, 15GB each):
+      vLLM fp16 + tensor_parallel=2 → 8GB/GPU weights + 1GB KV cache = 9GB/GPU
+      Training 4-bit balanced        → ~2.25GB/GPU weights + ~0.85GB opt/act
+      Total per GPU                  → ~12GB < 15GB  ✓
+
+    Returns the Popen handle if the server becomes healthy within 10 min, else None.
+    """
+    import requests  # available in Kaggle
+
+    log_path = Path("/kaggle/working/vllm_server.log")
+    env = os.environ.copy()
+    env["HF_TOKEN"] = hf_token
+
+    cmd = [
+        "trl", "vllm-serve",
+        "--model", model_name,
+        "--tensor-parallel-size", str(gpu_count),
+        "--gpu-memory-utilization", "0.60",
+        "--max-model-len", "512",
+        "--dtype", "half",
+        "--port", "8000",
+    ]
+    print(f"[vllm] Starting server (logs → {log_path})", flush=True)
+    log_fh = open(log_path, "w")
+    proc = subprocess.Popen(cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT)
+
+    health_url = "http://127.0.0.1:8000/health"
+    for i in range(120):       # 120 × 5s = 600s = 10 min
+        time.sleep(5)
+        if proc.poll() is not None:
+            log_fh.flush()
+            print(f"[vllm] Server process died (exit {proc.returncode}). See {log_path}", flush=True)
+            log_fh.close()
+            return None
+        try:
+            r = requests.get(health_url, timeout=2)
+            if r.ok:
+                print(f"[vllm] Server ready after {(i + 1) * 5}s ✓", flush=True)
+                log_fh.close()
+                return proc
+        except Exception:
+            pass
+        if i % 6 == 0:
+            print(f"[vllm] Waiting for server... ({(i + 1) * 5}s elapsed)", flush=True)
+
+    print("[vllm] Server not ready after 600s — killing.", flush=True)
+    proc.terminate()
+    log_fh.close()
+    return None
+
+
 def main() -> int:
     repo_root = Path("/kaggle/working/codeforge-asm")
     os.chdir(repo_root)
@@ -171,7 +232,7 @@ def main() -> int:
     sh(
         "pip install -q -U pyyaml wandb accelerate datasets peft trl "
         "huggingface_hub mistralai transformers sentencepiece tiktoken "
-        "'bitsandbytes>=0.46.1'"
+        "'bitsandbytes>=0.46.1' 'protobuf<6' 'grpcio-status<1.72'"
     )
     # vLLM: fast generation engine (5-10x vs HF generate).
     # Install separately so a vLLM failure doesn't block the rest.
@@ -218,24 +279,39 @@ def main() -> int:
     # 7. Write optimized config
     cfg_out = write_full_config(repo_root, start_iter, gpu_count=gpu_count)
 
-    def run_training(cfg_path: Path, extra_args: list[str] | None = None) -> int:
+    def run_training(cfg_path: Path) -> int:
         cmd = [
             sys.executable, "train.py",
             "--config", str(cfg_path),
             "--start-iter", str(start_iter),
             "--ensure-system-deps",
-        ] + (extra_args or [])
+        ]
         print(f"[kaggle_resume_final] running: {' '.join(cmd)}", flush=True)
         return subprocess.run(cmd, cwd=str(repo_root)).returncode
 
-    # 8. Run — try with vLLM, fall back to HF generate on failure
-    rc = run_training(cfg_out)
-    if rc != 0:
-        print("[kaggle_resume_final] Training failed (possibly vLLM OOM). Retrying without vLLM...", flush=True)
-        cfg = yaml.safe_load(cfg_out.read_text())
-        cfg["training"]["use_vllm"] = False
-        cfg_out.write_text(yaml.safe_dump(cfg, sort_keys=False))
+    # 8. Start vLLM server in background (5-10x faster generation).
+    #    Server must be healthy BEFORE GRPOTrainer init or TRL times out after 240s.
+    vllm_proc = None
+    try:
+        vllm_proc = start_vllm_server(
+            "mistralai/Ministral-8B-Instruct-2410", gpu_count, hf_token,
+        )
+    except Exception as e:
+        print(f"[kaggle_resume_final] vLLM server error: {e}", flush=True)
+
+    if vllm_proc is not None:
+        print("[kaggle_resume_final] vLLM ready → training with vLLM ✓", flush=True)
+    else:
+        raise RuntimeError("[kaggle_resume_final] vLLM unavailable; aborting (strict vLLM mode).")
+
+    # 9. Run training; always shut down vLLM server afterwards
+    try:
         rc = run_training(cfg_out)
+    finally:
+        if vllm_proc and vllm_proc.poll() is None:
+            print("[kaggle_resume_final] Shutting down vLLM server...", flush=True)
+            vllm_proc.terminate()
+            vllm_proc.wait(timeout=15)
 
     return rc
 

@@ -103,8 +103,28 @@ class HFTextGenerator:
     def __init__(self, model: Any, tokenizer: Any) -> None:
         self.model = model
         self.tokenizer = tokenizer
+        self._ensure_lm_head_dtype()
+
+    def _ensure_lm_head_dtype(self) -> None:
+        """Keep lm_head dtype aligned with hidden states for 4-bit + PEFT generation."""
+        if torch is None:
+            return
+        lm_head = getattr(self.model, "lm_head", None)
+        if lm_head is None or not hasattr(lm_head, "weight"):
+            return
+        try:
+            target_dtype = next(self.model.parameters()).dtype
+            if lm_head.weight.dtype != target_dtype:
+                lm_head.to(dtype=target_dtype)
+                print(
+                    f"[CodeForge] Aligned lm_head dtype: "
+                    f"{lm_head.weight.dtype} -> {target_dtype}"
+                )
+        except Exception as exc:
+            print(f"[CodeForge] lm_head dtype alignment skipped: {exc}")
 
     def __call__(self, prompt: str, n: int, max_new_tokens: int, temperature: float, top_p: float) -> list[str]:
+        self._ensure_lm_head_dtype()
         encoded = self.tokenizer(
             [prompt] * n,
             return_tensors="pt",

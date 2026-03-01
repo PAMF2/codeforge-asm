@@ -229,10 +229,24 @@ def main() -> int:
     sh("nvidia-smi || true", check=False)
 
     # 2. Install dependencies (vllm for fast generation, accelerate for DDP)
+    # Pin transformer stack compatible with vLLM 0.12.0
     sh(
-        "pip install -q -U pyyaml wandb accelerate datasets peft trl "
-        "huggingface_hub mistralai transformers sentencepiece tiktoken "
-        "'bitsandbytes>=0.46.1' 'protobuf<6' 'grpcio-status<1.72'"
+        "pip install -q --upgrade --force-reinstall "
+        "'transformers==4.57.1' "
+        "'tokenizers>=0.22,<0.23' "
+        "'trl>=0.21,<0.24' "
+        "'accelerate>=1.8,<1.12' "
+        "'peft>=0.17,<0.19' "
+        "'huggingface_hub>=0.34,<1.0' "
+        "'pyyaml>=6.0.2' "
+        "'wandb>=0.20,<0.26' "
+        "'datasets>=4.0,<5.0' "
+        "'mistralai>=1.0,<2.0' "
+        "'sentencepiece>=0.2.0' "
+        "'tiktoken>=0.7.0' "
+        "'bitsandbytes>=0.46.1' "
+        "'protobuf<6' "
+        "'grpcio-status<1.72'"
     )
     # vLLM: fast generation engine (5-10x vs HF generate).
     # Install separately so a vLLM failure doesn't block the rest.

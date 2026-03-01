@@ -474,7 +474,7 @@ def _per_tier_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
     return metrics
 
 
-def maybe_build_train_bundle(cfg: RuntimeConfig) -> TrainBundle | None:
+def maybe_build_train_bundle(cfg: RuntimeConfig, resume_from: str | None = None) -> TrainBundle | None:
     training = cfg.raw["training"]
     if bool(training.get("dry_run", True)):
         return None
@@ -553,7 +553,13 @@ def maybe_build_train_bundle(cfg: RuntimeConfig) -> TrainBundle | None:
         quantization_config=quant_cfg,
     )
 
-    if get_peft_model is not None and LoraConfig is not None:
+    if resume_from:
+        # Load existing LoRA adapter from checkpoint
+        from peft import PeftModel
+        print(f"[CodeForge] Resuming LoRA from: {resume_from}")
+        model = PeftModel.from_pretrained(model, resume_from, is_trainable=True)
+        model.print_trainable_parameters()
+    elif get_peft_model is not None and LoraConfig is not None:
         lora_cfg = LoraConfig(
             r=int(model_cfg.get("lora_r", 16)),
             lora_alpha=int(model_cfg.get("lora_alpha", 32)),
@@ -575,14 +581,21 @@ def maybe_build_train_bundle(cfg: RuntimeConfig) -> TrainBundle | None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/grpo_config.yaml")
+    parser.add_argument(
+        "--start-iter", type=int, default=0,
+        help="Resume training from this iteration index. Loads the LoRA checkpoint "
+             "from iter_{N-1} in checkpoints_dir. (default: 0 = start fresh)",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    start_iter: int = args.start_iter
     random.seed(int(cfg.raw["project"]["seed"]))
 
     training = cfg.raw["training"]
     paths = cfg.raw["paths"]
     artifacts_dir = Path(paths["artifacts_dir"])
+    checkpoints_dir = Path(paths["checkpoints_dir"])
     ensure_dir(artifacts_dir)
 
     prompts = PromptEngine(paths["prompt_dataset"])
@@ -598,7 +611,17 @@ def main() -> None:
         top_p=float(training["top_p"]),
     )
 
-    train_bundle = maybe_build_train_bundle(cfg)
+    # Resolve resume checkpoint from iter_{start_iter - 1}
+    resume_path: str | None = None
+    if start_iter > 0:
+        ckpt_candidate = checkpoints_dir / f"iter_{start_iter - 1}"
+        if ckpt_candidate.exists():
+            resume_path = str(ckpt_candidate)
+            print(f"[CodeForge] Resuming LoRA from checkpoint: {resume_path}")
+        else:
+            print(f"[CodeForge] WARNING: checkpoint {ckpt_candidate} not found; starting fresh LoRA")
+
+    train_bundle = maybe_build_train_bundle(cfg, resume_from=resume_path)
     generator = train_bundle.generator if train_bundle is not None else DummyGenerator()
     best_of_n = BestOfN(generator=generator, cfg=bon_cfg)
     mcts_searcher = _build_mcts_searcher(cfg, generator, reward_pipeline)
@@ -619,14 +642,16 @@ def main() -> None:
     tier_counts = prompts.tier_counts()
     print(f"[CodeForge] Training mode: {actual_mode}")
     print(f"[CodeForge] Dataset: {len(prompts.all_items())} prompts, tiers: {tier_counts}")
+    if start_iter > 0:
+        print(f"[CodeForge] Resuming from iteration {start_iter} / {cfg.iterations}")
 
     use_wandb = bool(training.get("use_wandb", True)) and wandb is not None
     run = None
     if use_wandb:
-        run = wandb.init(project=cfg.raw["project"]["name"], config=cfg.raw)
+        run = wandb.init(project=cfg.raw["project"]["name"], config=cfg.raw, resume="allow")
 
     print("[CodeForge] Starting loop")
-    for it in range(cfg.iterations):
+    for it in range(start_iter, cfg.iterations):
         if use_random_sampling:
             batch_prompts = prompts.sample_random(cfg.prompts_per_iteration)
         else:
@@ -688,7 +713,6 @@ def main() -> None:
         out_path.write_text(json.dumps(all_rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
         if train_bundle is not None:
-            checkpoints_dir = Path(paths["checkpoints_dir"])
             ensure_dir(checkpoints_dir)
             ckpt_path = checkpoints_dir / f"iter_{it}"
             ensure_dir(ckpt_path)

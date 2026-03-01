@@ -93,11 +93,28 @@ def _structural_score(asm_code: str) -> float:
     return max(0.0, min(s, 0.12))
 
 
-def _stdout_similarity(got: str, expected: str) -> float:
-    """Character-level similarity ratio using difflib (0.0–1.0)."""
+def _stdout_partial(got: str, expected: str) -> float:
+    """
+    Partial correctness bonus for stdout tasks (0.0–0.20).
+    Only rewards near-perfect output to prevent reward hacking
+    (e.g. model outputting 'e\\n' to score against many tier-2 tasks).
+
+    Thresholds are intentionally strict:
+      ≥ 0.95 → +0.20  (e.g. correct word, just missing trailing newline)
+      < 0.95 → +0.00  (anything more wrong gets nothing)
+
+    We deliberately skip the 0.60–0.94 band — too exploitable.
+    The model would learn short character sequences that happen to match
+    multiple expected strings across the dataset (reward hacking).
+    """
     if not expected:
-        return 1.0 if not got else 0.0
-    return SequenceMatcher(None, got, expected).ratio()
+        return 0.0
+    if got == expected:
+        return 0.30  # exact match handled by caller, but guard here too
+    sim = SequenceMatcher(None, got, expected).ratio()
+    if sim >= 0.95:
+        return 0.20
+    return 0.0
 
 
 # ── RewardPipeline ────────────────────────────────────────────────────────────
@@ -163,28 +180,22 @@ class RewardPipeline:
                 correct = True
                 correctness_bonus = 0.30
             else:
-                # Partial credit for similar stdout
-                # (e.g. correct word but missing newline, off-by-one char)
-                sim = _stdout_similarity(run.stdout, prompt.expected_stdout)
-                if sim >= 0.90:
-                    correctness_bonus = 0.20   # very close
-                elif sim >= 0.60:
-                    correctness_bonus = 0.10   # partially correct
+                # Strict partial: only near-perfect output (≥0.95 sim) gets credit.
+                # Avoids reward hacking via short strings matching many expected values.
+                correctness_bonus = _stdout_partial(run.stdout, prompt.expected_stdout)
 
         elif prompt.expected_exit_code is not None:
             if run.returncode == prompt.expected_exit_code:
                 correct = True
                 correctness_bonus = 0.30
-            # No partial credit for exit codes — they're arbitrary numbers,
-            # "close" doesn't mean "almost right".
+            # No partial for exit codes — arbitrary numbers, proximity is meaningless.
 
         else:
-            # No expectation specified — reward any clean exit
             if run.returncode == 0:
                 correct = True
                 correctness_bonus = 0.30
 
-        # Fallback tiny bonus for clean exit even when unconstrained
+        # Fallback tiny bonus for clean exit when no expectation specified
         if not correct and prompt.expected_stdout is None and prompt.expected_exit_code is None and run.returncode == 0:
             correctness_bonus = 0.15
 
@@ -204,13 +215,31 @@ class RewardPipeline:
         workers: int = 32,
     ) -> list[RewardResult]:
         """
-        Evaluate (prompt, asm_code, sample_id) tuples in parallel with 32 workers.
-        subprocess.run releases the GIL, so ThreadPoolExecutor gives true parallelism
-        without multiprocessing pickling overhead. 32 workers saturates nasm/ld/run
-        even on large batches (160+ samples) without excessive thread overhead.
+        Evaluate (prompt, asm_code, sample_id) tuples in parallel.
+
+        - ThreadPoolExecutor: subprocess.run() releases the GIL, so threads give
+          true parallelism without pickling overhead of multiprocessing.
+        - workers=32: saturates nasm/ld/run on large batches (160 samples) while
+          keeping thread creation overhead negligible.
+        - Per-future exception handling: a single broken sample (e.g. nasm crash,
+          timeout edge-case) gets reward=0 and does NOT abort the whole batch.
+          Order is fully preserved.
         """
         if not items:
             return []
-        with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
+
+        _zero = RewardResult(
+            reward=0.0, assembled=False, linked=False, ran=False, correct=False,
+            stdout="", stderr="evaluation_error", exit_code=None, stage_failed="error",
+        )
+
+        n_workers = min(workers, len(items))
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
             futures = [pool.submit(self.evaluate, p, asm, sid) for p, asm, sid in items]
-            return [f.result() for f in futures]
+            results: list[RewardResult] = []
+            for f in futures:
+                try:
+                    results.append(f.result())
+                except Exception:
+                    results.append(_zero)
+            return results

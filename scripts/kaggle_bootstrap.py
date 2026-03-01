@@ -19,6 +19,31 @@ def get_secret(name: str) -> str:
     return UserSecretsClient().get_secret(name)
 
 
+def ensure_utils_exec_error_guard(repo_root: Path) -> None:
+    utils_path = repo_root / "src" / "utils.py"
+    src = utils_path.read_text(encoding="utf-8")
+    if "except OSError as exc" in src:
+        print("[kaggle_bootstrap] src/utils.py already handles OSError")
+        return
+
+    marker = "    except FileNotFoundError as exc:\n"
+    if marker not in src:
+        print("[kaggle_bootstrap] could not patch src/utils.py automatically")
+        return
+
+    patch = """    except OSError as exc:
+        return subprocess.CompletedProcess(
+            cmd_list,
+            returncode=126,
+            stdout="",
+            stderr=f"OS error while executing command: {exc}",
+        )
+"""
+    src = src.replace(marker, patch + marker, 1)
+    utils_path.write_text(src, encoding="utf-8")
+    print("[kaggle_bootstrap] patched src/utils.py with OSError guard")
+
+
 def write_kaggle_config(repo_root: Path) -> Path:
     cfg_path = repo_root / "configs" / "grpo_config.yaml"
     out_path = repo_root / "configs" / "grpo_config.kaggle.yaml"
@@ -68,6 +93,7 @@ def main() -> int:
     except Exception:
         os.environ["WANDB_API_KEY"] = get_secret("WANDB _API_KEY")
 
+    ensure_utils_exec_error_guard(repo_root)
     kaggle_cfg = write_kaggle_config(repo_root)
 
     # Launch training

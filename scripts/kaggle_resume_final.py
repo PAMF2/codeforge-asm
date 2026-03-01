@@ -36,12 +36,14 @@ def get_secret_or_env(name: str) -> str | None:
 
 def install_python_stack() -> None:
     # Keep this stack consistent to avoid numpy/scipy/sklearn and torchvision issues.
+    # CRITICAL: transformers>=5.0 is REQUIRED for MinistralForCausalLM.
+    # transformers==4.57.1 does NOT have this class — do NOT pin to 4.x.
     sh(
         "pip install -q --upgrade --force-reinstall "
         "'numpy==2.1.3' "
         "'scipy==1.14.1' "
         "'scikit-learn==1.5.2' "
-        "'transformers==4.57.1' "
+        "'transformers>=5.0,<6.0' "  # must be >=5.0 — MinistralForCausalLM only exists in 5.x
         "'tokenizers>=0.22,<0.23' "
         "'trl>=0.21,<0.24' "
         "'accelerate>=1.8,<1.12' "
@@ -65,11 +67,38 @@ def install_system_deps() -> None:
 
 
 def check_ministral_import() -> None:
-    probe = (
-        "from transformers.models.ministral.modeling_ministral import MinistralForCausalLM; "
-        "print('OK: Ministral import')"
+    """
+    Verify MinistralForCausalLM can be imported.
+    Saves full traceback to /tmp/ministral_diag.txt.
+    If Kaggle cell output is truncated: !cat /tmp/ministral_diag.txt
+    """
+    diag = Path("/tmp/ministral_diag.py")
+    diag.write_text(
+        "import sys, traceback\n"
+        "out = open('/tmp/ministral_diag.txt', 'w')\n"
+        "def log(m):\n"
+        "    print(m, flush=True); out.write(m+'\\n'); out.flush()\n"
+        "try:\n"
+        "    import transformers\n"
+        "    log(f'transformers: {transformers.__version__}')\n"
+        "    try:\n"
+        "        import transformers.modeling_layers\n"
+        "        log('modeling_layers: OK')\n"
+        "    except Exception as e:\n"
+        "        log(f'modeling_layers FAILED: {e}')\n"
+        "    from transformers.models.ministral.modeling_ministral import MinistralForCausalLM\n"
+        "    log('MinistralForCausalLM: OK')\n"
+        "    out.close(); sys.exit(0)\n"
+        "except Exception:\n"
+        "    tb = traceback.format_exc()\n"
+        "    log('IMPORT FAILED — full traceback:')\n"
+        "    log(tb)\n"
+        "    out.close()\n"
+        "    log('Full trace: !cat /tmp/ministral_diag.txt')\n"
+        "    sys.exit(1)\n",
+        encoding="utf-8",
     )
-    sh(f"python -c \"{probe}\"")
+    sh(f"{sys.executable} /tmp/ministral_diag.py")
 
 
 def parse_iters(repo_files: list[str]) -> list[int]:

@@ -586,6 +586,18 @@ def maybe_build_train_bundle(cfg: RuntimeConfig, resume_from: str | None = None)
         "max_memory": max_memory,
         "quantization_config": quant_cfg,
     }
+
+    # torch_dtype: must be set when using 4-bit QLoRA with device_map (multi-GPU).
+    # Without it, non-quantized layers (e.g. lm_head) default to fp32 while
+    # activations are fp16 → RuntimeError: expected scalar type Float but found Half.
+    # T4 does NOT support bfloat16 — use float16.
+    torch_dtype_str = model_cfg.get("torch_dtype", None)
+    if torch_dtype_str and torch is not None:
+        model_load_kwargs["torch_dtype"] = getattr(torch, torch_dtype_str)
+    elif load_in_4bit and torch is not None:
+        # Sane default for 4-bit QLoRA: always use float16
+        model_load_kwargs["torch_dtype"] = torch.float16
+
     attn_impl = str(model_cfg.get("attn_implementation", "sdpa"))
     if attn_impl != "eager":
         model_load_kwargs["attn_implementation"] = attn_impl

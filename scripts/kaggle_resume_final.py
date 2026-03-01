@@ -144,6 +144,9 @@ def write_resume_config(cfg: dict[str, Any]) -> Path:
     cfg["model"]["name_or_path"] = "mistralai/Ministral-8B-Instruct-2410"
     cfg["model"]["trust_remote_code"] = True
     cfg["model"]["load_in_4bit"] = True
+    # float16 required with 4-bit QLoRA + device_map: prevents lm_head fp32/fp16 mismatch.
+    # T4 (SM75) does NOT support bfloat16 — always use float16.
+    cfg["model"]["torch_dtype"] = "float16"
     cfg["model"]["device_map"] = "balanced"
     cfg["model"]["max_memory_per_gpu_gb"] = 14
     cfg["model"]["attn_implementation"] = "sdpa"

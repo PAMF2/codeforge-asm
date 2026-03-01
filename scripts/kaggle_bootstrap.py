@@ -19,42 +19,6 @@ def get_secret(name: str) -> str:
     return UserSecretsClient().get_secret(name)
 
 
-def patch_exec_format_handler(repo_root: Path) -> None:
-    utils_path = repo_root / "src" / "utils.py"
-    src = utils_path.read_text(encoding="utf-8")
-    old = """def run_cmd(cmd: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
-"""
-    new = """def run_cmd(cmd: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except OSError as e:
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=-127,
-            stdout="",
-            stderr=f"OSError: {e}",
-        )
-"""
-    if old in src:
-        utils_path.write_text(src.replace(old, new), encoding="utf-8")
-        print("[kaggle_bootstrap] patched src/utils.py")
-    else:
-        print("[kaggle_bootstrap] run_cmd block not found; skipping patch")
-
-
 def write_kaggle_config(repo_root: Path) -> Path:
     cfg_path = repo_root / "configs" / "grpo_config.yaml"
     out_path = repo_root / "configs" / "grpo_config.kaggle.yaml"
@@ -85,6 +49,10 @@ def write_kaggle_config(repo_root: Path) -> Path:
 def main() -> int:
     repo_root = Path("/kaggle/working/codeforge-asm")
 
+    # Ensure Kaggle dual-T4 setup is visible to torch/accelerate.
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0,1")
+    sh("nvidia-smi || true")
+
     # System + Python deps
     sh("apt-get update -y && apt-get install -y nasm binutils")
     sh(
@@ -100,7 +68,6 @@ def main() -> int:
     except Exception:
         os.environ["WANDB_API_KEY"] = get_secret("WANDB _API_KEY")
 
-    patch_exec_format_handler(repo_root)
     kaggle_cfg = write_kaggle_config(repo_root)
 
     # Launch training

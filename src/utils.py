@@ -45,6 +45,14 @@ def run_cmd(cmd: Iterable[str], timeout_seconds: int) -> subprocess.CompletedPro
             timeout=timeout_seconds,
             check=False,
         )
+    except OSError as exc:
+        # E.g. Exec format error for invalid binaries; treat as failed run, not fatal crash.
+        return subprocess.CompletedProcess(
+            cmd_list,
+            returncode=126,
+            stdout="",
+            stderr=f"OS error while executing command: {exc}",
+        )
     except FileNotFoundError as exc:
         return subprocess.CompletedProcess(
             cmd_list,

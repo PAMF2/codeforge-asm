@@ -175,7 +175,9 @@ def main() -> int:
     )
     # vLLM: fast generation engine (5-10x vs HF generate).
     # Install separately so a vLLM failure doesn't block the rest.
-    sh("pip install -q vllm || echo '[kaggle_resume_final] vllm install failed, will use HF generate'",
+    # Pin to TRL-compatible version. TRL supports 0.10.2–0.12.0; Kaggle default is 0.16.0
+    # which breaks the vLLM client (version mismatch → ConnectionRefused after 240s timeout).
+    sh("pip install -q 'vllm==0.12.0' || echo '[kaggle_resume_final] vllm install failed, will use HF generate'",
        check=False)
 
     # 3. Load Kaggle secrets

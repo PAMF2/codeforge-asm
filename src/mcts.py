@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -14,6 +15,19 @@ _SYS_CONT = (
     "Given a partial program, output only the REMAINING lines to complete it."
 )
 
+# Patterns that indicate the model is generating non-assembly text.
+_NON_ASM_PATTERNS = re.compile(
+    r"^(def |class |import |function |#include|int main|public |private |return |print\(|console\.)",
+    re.IGNORECASE,
+)
+# Lines that are plausible NASM — instructions, directives, labels, comments.
+_ASM_HINT = re.compile(
+    r"^\s*(global|section|extern|mov|add|sub|imul|idiv|div|xor|and|or|not|shl|shr|cmp|"
+    r"jmp|je|jne|jl|jg|jle|jge|ja|jb|jz|jnz|call|ret|push|pop|lea|test|inc|dec|neg|"
+    r"syscall|int|db|dw|dd|dq|resb|equ|nop|_start|\.|\w+:|\s*;)",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class MCTSConfig:
@@ -22,6 +36,7 @@ class MCTSConfig:
     branch_factor: int = 4
     exploration_constant: float = 1.414
     max_depth: int = 15
+    min_tier: int = 3  # Only apply MCTS to prompts with tier >= min_tier
 
 
 class TextGenerator(Protocol):
@@ -64,12 +79,11 @@ class _Node:
 
 class MCTSLineSearch:
     """
-    Prefix-tree MCTS for assembly generation.
+    Prefix-tree MCTS for assembly generation (tier 3+ prompts).
 
-    Each node holds lines generated so far (a partial program prefix).
     Selection:   UCB1 traversal to a leaf or terminal node.
     Expansion:   Generator produces branch_factor completions from the prefix;
-                 the first new line of each becomes a child node.
+                 plausible first lines become child nodes.
     Simulation:  Complete the program from the selected node and score it.
     Backprop:    Propagate reward up to root.
     """
@@ -96,12 +110,21 @@ class MCTSLineSearch:
     def _is_terminal(self, lines: tuple[str, ...]) -> bool:
         if len(lines) >= self.cfg.max_lines:
             return True
-        # Compact the text for pattern matching.
         text = "".join(lines).replace(" ", "").replace("\t", "").lower()
-        has_exit = "movrax,60" in text or "moveax,60" in text or "movrax,1\n" in text
-        has_int80 = "int0x80" in text
+        has_exit = "movrax,60" in text or "moveax,60" in text
         has_syscall = "syscall" in text
+        has_int80 = "int0x80" in text
         return (has_exit and has_syscall) or has_int80
+
+    @staticmethod
+    def _is_plausible_line(line: str) -> bool:
+        """Reject lines that are clearly not assembly (model hallucinating prose)."""
+        stripped = line.strip()
+        if not stripped:
+            return False
+        if _NON_ASM_PATTERNS.match(stripped):
+            return False
+        return bool(_ASM_HINT.match(stripped)) or stripped.startswith(";")
 
     @staticmethod
     def _parse_lines(code: str) -> tuple[str, ...]:
@@ -140,6 +163,9 @@ class MCTSLineSearch:
             if not new_lines:
                 continue
             next_line = new_lines[0]
+            # Plausibility filter: skip if line looks like prose/non-assembly.
+            if not self._is_plausible_line(next_line):
+                continue
             if next_line in node.children:
                 new_children.append(node.children[next_line])
             else:
@@ -183,6 +209,10 @@ class MCTSLineSearch:
 
     # ------------------------------------------------------------------ public API
 
+    def should_apply(self, prompt_item: PromptItem) -> bool:
+        """Returns True if MCTS should be applied to this prompt (tier >= min_tier)."""
+        return prompt_item.tier >= self.cfg.min_tier
+
     def search(
         self,
         task: str,
@@ -192,15 +222,18 @@ class MCTSLineSearch:
         """
         Run MCTS and return row dicts compatible with evaluate_candidates().
         Rows are sorted best-reward-first.
+        Also returns avg_depth as metadata in each row.
         """
         root = _Node(lines=())
         all_rows: list[dict[str, Any]] = []
         seen_programs: set[str] = set()
+        depths: list[int] = []
 
         for sim_idx in range(self.cfg.simulations):
             node = self._select(root)
             children = self._expand(node, task)
             node = children[0]
+            depths.append(node.depth())
 
             sample_id = f"{sample_prefix}-s{sim_idx}"
             reward, program, rr = self._simulate(node, task, prompt_item, sample_id)
@@ -212,6 +245,7 @@ class MCTSLineSearch:
                     {
                         "prompt_id": prompt_item.id,
                         "instruction": prompt_item.instruction,
+                        "tier": prompt_item.tier,
                         "asm": program,
                         "reward": reward,
                         "assembled": rr.assembled,
@@ -222,6 +256,11 @@ class MCTSLineSearch:
                         "source": "mcts",
                     }
                 )
+
+        avg_depth = sum(depths) / max(1, len(depths))
+        # Attach avg_depth to each row for W&B logging aggregation.
+        for row in all_rows:
+            row["mcts_avg_depth"] = avg_depth
 
         all_rows.sort(key=lambda r: r["reward"], reverse=True)
         return all_rows

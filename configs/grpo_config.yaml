@@ -12,15 +12,16 @@ model:
 
 training:
   grpo_backend: manual # options: manual | trl
-  iterations: 8
-  prompts_per_iteration: 16
+  iterations: 10
+  prompts_per_iteration: 20   # random sample from full dataset each iteration
+  use_random_sampling: true   # random vs deterministic (first N)
   generations_per_prompt: 16
   learning_rate: 5e-6
   batch_size: 2
   gradient_accumulation_steps: 4
   grad_clip_norm: 1.0
   train_max_seq_len: 1024
-  max_new_tokens: 256
+  max_new_tokens: 512
   temperature: 0.8
   top_p: 0.95
   kl_beta: 0.1
@@ -31,6 +32,7 @@ training:
   hub_fallback_repo_id: PAMF2/codeforge
   hub_private: true
   dry_run: true
+  use_unsloth: false  # set true if unsloth is installed
 
 reward:
   stage_weights:
@@ -46,6 +48,7 @@ mcts:
   branch_factor: 4
   exploration_constant: 1.414
   max_depth: 15
+  min_tier: 3  # Only apply MCTS to tier >= 3
 
 paths:
   prompt_dataset: prompts/dataset.json

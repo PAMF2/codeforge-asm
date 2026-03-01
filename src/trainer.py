@@ -142,68 +142,6 @@ class TRLBundle:
     trainer: Any
 
 
-def maybe_build_train_bundle(cfg: RuntimeConfig) -> TrainBundle | None:
-    training = cfg.raw["training"]
-    if bool(training.get("dry_run", True)):
-        return None
-
-    if AutoModelForCausalLM is None or AutoTokenizer is None or torch is None:
-        raise RuntimeError("Missing ML dependencies. Install requirements and rerun.")
-
-    model_cfg = cfg.raw["model"]
-    model_name = model_cfg["name_or_path"]
-    trust_remote_code = bool(model_cfg.get("trust_remote_code", True))
-    load_in_4bit = bool(model_cfg.get("load_in_4bit", True))
-
-    quant_cfg = None
-    if load_in_4bit:
-        if BitsAndBytesConfig is None:
-            raise RuntimeError("bitsandbytes/transformers quantization config unavailable.")
-        quant_cfg = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        trust_remote_code=trust_remote_code,
-        device_map="auto",
-        quantization_config=quant_cfg,
-    )
-
-    if get_peft_model is not None and LoraConfig is not None:
-        lora_cfg = LoraConfig(
-            r=int(model_cfg.get("lora_r", 16)),
-            lora_alpha=int(model_cfg.get("lora_alpha", 32)),
-            lora_dropout=float(model_cfg.get("lora_dropout", 0.05)),
-            target_modules=[
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "up_proj",
-                "down_proj",
-                "gate_proj",
-            ],
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
-        model = get_peft_model(model, lora_cfg)
-        model.print_trainable_parameters()
-
-    learning_rate = float(training.get("learning_rate", 5e-6))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    generator = HFTextGenerator(model=model, tokenizer=tokenizer)
-
-    return TrainBundle(model=model, tokenizer=tokenizer, optimizer=optimizer, generator=generator)
-
-
 def _build_mcts_searcher(cfg: RuntimeConfig, generator: Any, reward_pipeline: RewardPipeline) -> MCTSLineSearch:
     mcts_raw = cfg.raw.get("mcts", {})
     mcts_cfg = MCTSConfig(
@@ -506,6 +444,7 @@ def evaluate_candidates(
             {
                 "prompt_id": prompt_item.id,
                 "instruction": prompt_item.instruction,
+                "tier": prompt_item.tier,
                 "asm": asm,
                 "reward": result.reward,
                 "assembled": result.assembled,
@@ -519,6 +458,107 @@ def evaluate_candidates(
     return rows
 
 
+def _per_tier_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Compute assembly/correctness rates per tier for W&B logging."""
+    by_tier: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        t = int(r.get("tier", 0))
+        by_tier.setdefault(t, []).append(r)
+
+    metrics: dict[str, float] = {}
+    for tier, tier_rows in sorted(by_tier.items()):
+        n = max(1, len(tier_rows))
+        metrics[f"reward/tier{tier}_assemble"] = sum(1 for r in tier_rows if r["assembled"]) / n
+        metrics[f"reward/tier{tier}_correct"] = sum(1 for r in tier_rows if r["correct"]) / n
+        metrics[f"reward/tier{tier}_avg_reward"] = sum(r["reward"] for r in tier_rows) / n
+    return metrics
+
+
+def maybe_build_train_bundle(cfg: RuntimeConfig) -> TrainBundle | None:
+    training = cfg.raw["training"]
+    if bool(training.get("dry_run", True)):
+        return None
+
+    if AutoModelForCausalLM is None or AutoTokenizer is None or torch is None:
+        raise RuntimeError("Missing ML dependencies. Install requirements and rerun.")
+
+    model_cfg = cfg.raw["model"]
+    model_name = model_cfg["name_or_path"]
+    trust_remote_code = bool(model_cfg.get("trust_remote_code", True))
+    load_in_4bit = bool(model_cfg.get("load_in_4bit", True))
+    use_unsloth = bool(training.get("use_unsloth", False))
+
+    # Try Unsloth fast path first.
+    if use_unsloth:
+        try:
+            from unsloth import FastLanguageModel
+
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=model_name,
+                max_seq_length=int(training.get("train_max_seq_len", 1024)),
+                dtype=None,
+                load_in_4bit=load_in_4bit,
+            )
+            model = FastLanguageModel.get_peft_model(
+                model,
+                r=int(model_cfg.get("lora_r", 16)),
+                lora_alpha=int(model_cfg.get("lora_alpha", 32)),
+                lora_dropout=float(model_cfg.get("lora_dropout", 0.05)),
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+                bias="none",
+                use_gradient_checkpointing="unsloth",
+                random_state=int(cfg.raw["project"]["seed"]),
+            )
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            learning_rate = float(training.get("learning_rate", 5e-6))
+            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+            print("[CodeForge] Using Unsloth fast path.")
+            return TrainBundle(model=model, tokenizer=tokenizer, optimizer=optimizer, generator=HFTextGenerator(model=model, tokenizer=tokenizer))
+        except ImportError:
+            print("[CodeForge] Unsloth not available; falling back to standard HF.")
+
+    quant_cfg = None
+    if load_in_4bit:
+        if BitsAndBytesConfig is None:
+            raise RuntimeError("bitsandbytes/transformers quantization config unavailable.")
+        quant_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        trust_remote_code=trust_remote_code,
+        device_map="auto",
+        quantization_config=quant_cfg,
+    )
+
+    if get_peft_model is not None and LoraConfig is not None:
+        lora_cfg = LoraConfig(
+            r=int(model_cfg.get("lora_r", 16)),
+            lora_alpha=int(model_cfg.get("lora_alpha", 32)),
+            lora_dropout=float(model_cfg.get("lora_dropout", 0.05)),
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"],
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_cfg)
+        model.print_trainable_parameters()
+
+    learning_rate = float(training.get("learning_rate", 5e-6))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    generator = HFTextGenerator(model=model, tokenizer=tokenizer)
+
+    return TrainBundle(model=model, tokenizer=tokenizer, optimizer=optimizer, generator=generator)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/grpo_config.yaml")
@@ -527,6 +567,7 @@ def main() -> None:
     cfg = load_config(args.config)
     random.seed(int(cfg.raw["project"]["seed"]))
 
+    training = cfg.raw["training"]
     paths = cfg.raw["paths"]
     artifacts_dir = Path(paths["artifacts_dir"])
     ensure_dir(artifacts_dir)
@@ -538,17 +579,18 @@ def main() -> None:
     )
 
     bon_cfg = BestOfNConfig(
-        n=int(cfg.raw["training"]["generations_per_prompt"]),
-        max_new_tokens=int(cfg.raw["training"]["max_new_tokens"]),
-        temperature=float(cfg.raw["training"]["temperature"]),
-        top_p=float(cfg.raw["training"]["top_p"]),
+        n=int(training["generations_per_prompt"]),
+        max_new_tokens=int(training["max_new_tokens"]),
+        temperature=float(training["temperature"]),
+        top_p=float(training["top_p"]),
     )
 
     train_bundle = maybe_build_train_bundle(cfg)
     generator = train_bundle.generator if train_bundle is not None else DummyGenerator()
     best_of_n = BestOfN(generator=generator, cfg=bon_cfg)
     mcts_searcher = _build_mcts_searcher(cfg, generator, reward_pipeline)
-    use_mcts_after = int(cfg.raw["training"].get("use_mcts_after_iteration", 999))
+    use_mcts_after = int(training.get("use_mcts_after_iteration", 999))
+    use_random_sampling = bool(training.get("use_random_sampling", True))
 
     batch_prompts_for_init = prompts.sample(cfg.prompts_per_iteration)
     trl_bundle = maybe_build_trl_bundle(
@@ -559,29 +601,39 @@ def main() -> None:
         artifacts_dir=artifacts_dir,
     )
 
-    backend = str(cfg.raw["training"].get("grpo_backend", "manual")).lower()
+    backend = str(training.get("grpo_backend", "manual")).lower()
     actual_mode = "dry_run" if train_bundle is None else f"real:{backend}"
+    tier_counts = prompts.tier_counts()
     print(f"[CodeForge] Training mode: {actual_mode}")
+    print(f"[CodeForge] Dataset: {len(prompts.all_items())} prompts, tiers: {tier_counts}")
 
-    use_wandb = bool(cfg.raw["training"].get("use_wandb", True)) and wandb is not None
+    use_wandb = bool(training.get("use_wandb", True)) and wandb is not None
     run = None
     if use_wandb:
         run = wandb.init(project=cfg.raw["project"]["name"], config=cfg.raw)
 
     print("[CodeForge] Starting loop")
     for it in range(cfg.iterations):
-        batch_prompts = prompts.sample(cfg.prompts_per_iteration)
+        if use_random_sampling:
+            batch_prompts = prompts.sample_random(cfg.prompts_per_iteration)
+        else:
+            batch_prompts = prompts.sample(cfg.prompts_per_iteration)
+
         all_rows: list[dict[str, Any]] = []
         using_mcts = it >= use_mcts_after
+        mcts_depths: list[float] = []
 
         for p in batch_prompts:
             user_prompt = f"{SYS_PROMPT}\n\nTask: {p.instruction}"
-            if using_mcts:
+            # MCTS only for high-tier prompts (tier >= mcts_searcher.cfg.min_tier)
+            if using_mcts and mcts_searcher.should_apply(p):
                 mcts_rows = mcts_searcher.search(
                     task=user_prompt,
                     prompt_item=p,
                     sample_prefix=f"it{it}-{p.id}",
                 )
+                for row in mcts_rows:
+                    mcts_depths.append(row.pop("mcts_avg_depth", 0.0))
                 all_rows.extend(mcts_rows)
             else:
                 candidates = best_of_n.generate(user_prompt)
@@ -589,24 +641,30 @@ def main() -> None:
                 all_rows.extend(rows)
 
         rewards = [r["reward"] for r in all_rows]
-        avg_reward = sum(rewards) / max(1, len(rewards))
-        success_assemble = sum(1 for r in all_rows if r["assembled"]) / max(1, len(all_rows))
-        success_correct = sum(1 for r in all_rows if r["correct"]) / max(1, len(all_rows))
+        n_rows = max(1, len(all_rows))
+        avg_reward = sum(rewards) / n_rows
+        success_assemble = sum(1 for r in all_rows if r["assembled"]) / n_rows
+        success_correct = sum(1 for r in all_rows if r["correct"]) / n_rows
         mcts_rows_count = sum(1 for r in all_rows if r.get("source") == "mcts")
+        avg_mcts_depth = sum(mcts_depths) / max(1, len(mcts_depths))
 
         if backend == "trl":
             grpo_metrics = run_grpo_update_trl(trl_bundle)
         else:
             grpo_metrics = run_grpo_update_manual(all_rows, cfg, bundle=train_bundle)
 
+        tier_metrics = _per_tier_metrics(all_rows)
+
         iter_metrics = {
             "iteration": it,
-            "avg_reward": avg_reward,
-            "assemble_success_rate": success_assemble,
-            "correctness_rate": success_correct,
-            "mcts_rows": mcts_rows_count,
+            "reward/mean": avg_reward,
+            "reward/assembly_rate": success_assemble,
+            "reward/correct_rate": success_correct,
+            "mcts/rows": mcts_rows_count,
+            "mcts/avg_depth": avg_mcts_depth,
             "source": "mcts" if using_mcts else "bon",
             **grpo_metrics,
+            **tier_metrics,
         }
 
         print(json.dumps(iter_metrics, ensure_ascii=False))

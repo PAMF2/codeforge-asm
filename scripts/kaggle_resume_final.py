@@ -132,24 +132,20 @@ def write_full_config(repo_root: Path, start_iter: int, gpu_count: int = 2) -> P
     tr["hub_fallback_repo_id"] = "PAMF2/codeforge"
     tr["hub_private"] = True
 
-    # ── Speed optimizations ──────────────────────────────────────────
-    # num_train_epochs=1: 3x fewer gradient steps per iteration vs default 3.
-    # max_new_tokens=128: assembly programs are short; 256 wastes generation time.
-    # Strict vLLM mode in this launcher.
-    # gpu_memory_utilization=0.60: vLLM fp16 8B needs 8GB/GPU (tensor_parallel=2),
-    #   9GB/GPU allocated (1GB KV cache). Remaining 6GB/GPU for 4-bit training model.
+    # ── Speed optimizations (no vLLM — torch 2.10 incompatible with all TRL-supported vLLM) ──
+    # num_train_epochs=1: 3x fewer gradient steps vs default 3.
+    # max_new_tokens=80: NASM programs are short; 80 tokens covers all tier 1-3 tasks.
+    # prompts_per_iteration=10: halved from 20 → ~2.5x faster generation per iter.
+    # generations_per_prompt=8: keep diversity for GRPO variance reduction.
+    # Total tokens/iter: 10 × 8 × 80 = 6400 (vs 20 × 8 × 128 = 20480 before → 3.2x faster).
+    # Expected: ~15-20 min/iter × 8 iters ≈ 2-2.5h on 2x T4.
     tr["num_train_epochs"] = 1
-    tr["max_new_tokens"] = 128
-    tr["use_vllm"] = True
-    tr["vllm_server_host"] = "127.0.0.1"
-    tr["vllm_server_port"] = 8000
-    tr["vllm_tensor_parallel_size"] = gpu_count
-    tr["vllm_gpu_memory_utilization"] = 0.60
-    tr["vllm_max_model_len"] = 512
+    tr["max_new_tokens"] = 80
+    tr["use_vllm"] = False
 
     # ── Training config ───────────────────────────────────────────────
     tr["iterations"] = 10
-    tr["prompts_per_iteration"] = 20
+    tr["prompts_per_iteration"] = 10
     tr["generations_per_prompt"] = 8
     tr["batch_size"] = 2
     tr["gradient_accumulation_steps"] = 4
@@ -248,12 +244,10 @@ def main() -> int:
         "'protobuf<6' "
         "'grpcio-status<1.72'"
     )
-    # vLLM: fast generation engine (5-10x vs HF generate).
-    # Install separately so a vLLM failure doesn't block the rest.
-    # Pin to TRL-compatible version. TRL supports 0.10.2–0.12.0; Kaggle default is 0.16.0
-    # which breaks the vLLM client (version mismatch → ConnectionRefused after 240s timeout).
-    sh("pip install -q 'vllm==0.12.0' || echo '[kaggle_resume_final] vllm install failed, will use HF generate'",
-       check=False)
+    # vLLM is incompatible with Kaggle's current torch 2.10.0:
+    #   vllm==0.12.0 requires torch==2.9.0 (TRL-compatible but breaks on torch 2.10)
+    #   vllm==0.16.0 (Kaggle default) not supported by TRL's GRPOTrainer
+    # → Using HF generate; compensating with reduced max_new_tokens + prompts_per_iteration.
 
     # 3. Load Kaggle secrets
     os.environ["HF_TOKEN"] = get_secret("HF_TOKEN")
@@ -303,31 +297,8 @@ def main() -> int:
         print(f"[kaggle_resume_final] running: {' '.join(cmd)}", flush=True)
         return subprocess.run(cmd, cwd=str(repo_root)).returncode
 
-    # 8. Start vLLM server in background (5-10x faster generation).
-    #    Server must be healthy BEFORE GRPOTrainer init or TRL times out after 240s.
-    vllm_proc = None
-    try:
-        vllm_proc = start_vllm_server(
-            "mistralai/Ministral-8B-Instruct-2410", gpu_count, hf_token,
-        )
-    except Exception as e:
-        print(f"[kaggle_resume_final] vLLM server error: {e}", flush=True)
-
-    if vllm_proc is not None:
-        print("[kaggle_resume_final] vLLM ready → training with vLLM ✓", flush=True)
-    else:
-        raise RuntimeError("[kaggle_resume_final] vLLM unavailable; aborting (strict vLLM mode).")
-
-    # 9. Run training; always shut down vLLM server afterwards
-    try:
-        rc = run_training(cfg_out)
-    finally:
-        if vllm_proc and vllm_proc.poll() is None:
-            print("[kaggle_resume_final] Shutting down vLLM server...", flush=True)
-            vllm_proc.terminate()
-            vllm_proc.wait(timeout=15)
-
-    return rc
+    # 8. Run training (HF generate, no vLLM)
+    return run_training(cfg_out)
 
 
 if __name__ == "__main__":

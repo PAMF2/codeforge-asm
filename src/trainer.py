@@ -448,7 +448,7 @@ def evaluate_candidates(
 ) -> list[dict[str, Any]]:
     # Build batch and evaluate in parallel (ThreadPoolExecutor inside evaluate_batch)
     items = [(prompt_item, asm, f"{sample_prefix}-{idx}") for idx, asm in enumerate(candidates)]
-    results = reward_pipeline.evaluate_batch(items, workers=min(8, len(items)))
+    results = reward_pipeline.evaluate_batch(items, workers=min(32, len(items)))
     return [
         {
             "prompt_id": prompt_item.id,

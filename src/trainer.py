@@ -160,6 +160,29 @@ class HFTextGenerator:
 
                 lm_head.forward = guarded_forward  # type: ignore[assignment]
                 lm_head._codeforge_dtype_guard = True
+
+            # Extra safety: install pre-hook on every lm_head module found.
+            # This survives most wrapper paths and keeps inputs in the expected dtype.
+            for name, module in self.model.named_modules():
+                if not name.endswith("lm_head"):
+                    continue
+                if not hasattr(module, "weight"):
+                    continue
+                if getattr(module, "_codeforge_pre_hook_guard", False):
+                    continue
+
+                def _pre_hook(mod: Any, args: tuple[Any, ...]) -> tuple[Any, ...]:
+                    if not args:
+                        return args
+                    x = args[0]
+                    w = getattr(mod, "weight", None)
+                    if w is not None and hasattr(x, "dtype") and x.dtype != w.dtype:
+                        x = x.to(w.dtype)
+                        return (x, *args[1:])
+                    return args
+
+                module.register_forward_pre_hook(_pre_hook)
+                module._codeforge_pre_hook_guard = True
         except Exception as exc:
             print(f"[CodeForge] lm_head dtype alignment skipped: {exc}")
 

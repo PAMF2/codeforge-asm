@@ -27,23 +27,36 @@ def log(msg: str) -> None:
     print(f"[{ts()}][codeforge10h] {msg}", flush=True)
 
 
-def load_secret(name: str) -> str | None:
-    if os.getenv(name):
-        return os.getenv(name)
+def load_secret_candidates(names: list[str]) -> tuple[str | None, str | None]:
+    for name in names:
+        val = os.getenv(name)
+        if val:
+            return val, f"env:{name}"
     try:
         from kaggle_secrets import UserSecretsClient  # type: ignore
     except Exception:
-        return None
-    try:
-        return UserSecretsClient().get_secret(name)
-    except Exception:
-        return None
+        return None, None
+    client = UserSecretsClient()
+    for name in names:
+        try:
+            val = client.get_secret(name)
+            if val:
+                return val, f"kaggle:{name}"
+        except Exception:
+            continue
+    return None, None
 
 
 def load_env() -> None:
-    hf = load_secret("HF_TOKEN") or load_secret("HUGGINGFACE_HUB_TOKEN")
-    wb = load_secret("WANDB_API_KEY") or load_secret("WANDB _API_KEY")
-    mi = load_secret("MISTRAL_API_KEY")
+    hf, hf_src = load_secret_candidates(
+        ["HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_API_TOKEN", "HF_KEY", "hf_token"]
+    )
+    wb, wb_src = load_secret_candidates(
+        ["WANDB_API_KEY", "WANDB _API_KEY", "WANDB_KEY", "WANDB_TOKEN", "wandb_api_key"]
+    )
+    mi, mi_src = load_secret_candidates(
+        ["MISTRAL_API_KEY", "MISTRAL_KEY", "MISTRAL_TOKEN", "mistral_api_key"]
+    )
     if hf:
         os.environ["HF_TOKEN"] = hf.strip()
         os.environ["HUGGINGFACE_HUB_TOKEN"] = hf.strip()
@@ -51,9 +64,13 @@ def load_env() -> None:
         os.environ["WANDB_API_KEY"] = wb.strip()
     if mi:
         os.environ["MISTRAL_API_KEY"] = mi.strip()
-    log(f"HF_TOKEN loaded: {bool(os.getenv('HF_TOKEN'))}")
-    log(f"WANDB_API_KEY loaded: {bool(os.getenv('WANDB_API_KEY'))}")
-    log(f"MISTRAL_API_KEY loaded: {bool(os.getenv('MISTRAL_API_KEY'))}")
+    log(f"HF_TOKEN loaded: {bool(os.getenv('HF_TOKEN'))} ({hf_src or 'not found'})")
+    log(f"WANDB_API_KEY loaded: {bool(os.getenv('WANDB_API_KEY'))} ({wb_src or 'not found'})")
+    log(f"MISTRAL_API_KEY loaded: {bool(os.getenv('MISTRAL_API_KEY'))} ({mi_src or 'not found'})")
+    if not os.getenv("WANDB_API_KEY"):
+        log("WARNING: W&B secret not found. Run will continue with use_wandb=false.")
+    if not os.getenv("HF_TOKEN"):
+        log("WARNING: HF token not found. Checkpoint push_to_hub will be disabled.")
 
 
 def ensure_system_deps() -> None:

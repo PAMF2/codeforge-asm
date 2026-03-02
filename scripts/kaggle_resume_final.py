@@ -160,12 +160,14 @@ def write_resume_config(cfg: dict[str, Any]) -> Path:
     tr["hub_fallback_repo_id"] = "PAMF2/codeforge"
     tr["hub_private"] = True
 
-    # Faster settings on Kaggle T4 while keeping training signal.
-    tr["max_new_tokens"] = int(tr.get("max_new_tokens", 96))
-    tr["prompts_per_iteration"] = int(tr.get("prompts_per_iteration", 12))
-    tr["generations_per_prompt"] = int(tr.get("generations_per_prompt", 8))
-    tr["batch_size"] = int(tr.get("batch_size", 2))
-    tr["gradient_accumulation_steps"] = int(tr.get("gradient_accumulation_steps", 4))
+    # 6-hour safe profile for 2x T4 resume runs.
+    # Force lower generation load regardless of base config.
+    tr["iterations"] = min(int(tr.get("iterations", 10)), 8)
+    tr["max_new_tokens"] = 96
+    tr["prompts_per_iteration"] = 8
+    tr["generations_per_prompt"] = 8
+    tr["batch_size"] = 2
+    tr["gradient_accumulation_steps"] = 4
     tr["use_random_sampling"] = True
     tr["gradient_checkpointing"] = True
 

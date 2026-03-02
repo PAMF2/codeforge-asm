@@ -109,7 +109,7 @@ def write_resume_config(cfg: dict[str, Any]) -> Path:
     tr["hub_private"] = True
 
     # Quality-2h profile
-    tr["iterations"] = min(int(tr.get("iterations", 10)), 5)
+    tr["iterations"] = min(int(tr.get("iterations", 10)), 10)
     tr["max_new_tokens"] = 80
     tr["prompts_per_iteration"] = 10
     tr["generations_per_prompt"] = 6

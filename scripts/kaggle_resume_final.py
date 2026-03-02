@@ -160,16 +160,24 @@ def write_resume_config(cfg: dict[str, Any]) -> Path:
     tr["hub_fallback_repo_id"] = "PAMF2/codeforge"
     tr["hub_private"] = True
 
-    # 6-hour safe profile for 2x T4 resume runs.
-    # Force lower generation load regardless of base config.
-    tr["iterations"] = min(int(tr.get("iterations", 10)), 8)
-    tr["max_new_tokens"] = 96
-    tr["prompts_per_iteration"] = 8
-    tr["generations_per_prompt"] = 8
+    # Quality-2h profile (2x T4): keep learning signal, cut runtime hard.
+    # If resuming from iter_1, iterations=5 means only iter_2..4 (3 iterations).
+    tr["iterations"] = min(int(tr.get("iterations", 10)), 5)
+    tr["max_new_tokens"] = 80
+    tr["prompts_per_iteration"] = 10
+    tr["generations_per_prompt"] = 6
     tr["batch_size"] = 2
     tr["gradient_accumulation_steps"] = 4
+    tr["use_mcts_after_iteration"] = 3
     tr["use_random_sampling"] = True
     tr["gradient_checkpointing"] = True
+
+    # Lighter MCTS, applied only to hardest tier, to preserve quality without exploding runtime.
+    mcts = cfg.setdefault("mcts", {})
+    mcts["simulations"] = 8
+    mcts["branch_factor"] = 2
+    mcts["max_depth"] = 8
+    mcts["min_tier"] = 4
 
     OUT_CONFIG.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     print(f"[kaggle_resume_final] wrote {OUT_CONFIG}", flush=True)

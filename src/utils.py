@@ -45,6 +45,15 @@ def run_cmd(cmd: Iterable[str], timeout_seconds: int) -> subprocess.CompletedPro
             timeout=timeout_seconds,
             check=False,
         )
+    except subprocess.TimeoutExpired:
+        # Timeouts are expected on some generated binaries; return a failed run
+        # so reward logic can continue instead of aborting the full training loop.
+        return subprocess.CompletedProcess(
+            cmd_list,
+            returncode=124,
+            stdout="",
+            stderr=f"Command timed out after {timeout_seconds} seconds",
+        )
     except OSError as exc:
         # E.g. Exec format error for invalid binaries; treat as failed run, not fatal crash.
         return subprocess.CompletedProcess(

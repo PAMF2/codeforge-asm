@@ -40,7 +40,7 @@ reward:
     link: 0.25
     run: 0.20
     correctness: 0.30
-  timeout_seconds: 5
+  timeout_seconds: 12
 
 mcts:
   simulations: 32

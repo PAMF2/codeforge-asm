@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -161,8 +162,16 @@ class RewardPipeline:
         reward += 0.25
 
         # ── Stage 3: run ──────────────────────────────────────────────
-        run = run_cmd([str(bin_path)], self.timeout_seconds)
-        if run.returncode < 0:
+        try:
+            run = run_cmd([str(bin_path)], self.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            return RewardResult(
+                reward=reward,
+                assembled=True, linked=True, ran=False, correct=False,
+                stdout="", stderr=f"Command timed out after {self.timeout_seconds} seconds",
+                exit_code=124, stage_failed="run",
+            )
+        if run.returncode in (124, 126, 127) or run.returncode < 0:
             return RewardResult(
                 reward=reward,
                 assembled=True, linked=True, ran=False, correct=False,

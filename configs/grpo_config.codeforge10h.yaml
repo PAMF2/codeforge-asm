@@ -1,0 +1,56 @@
+project:
+  name: codeforge-asm
+  seed: 42
+
+model:
+  name_or_path: mistralai/Ministral-8B-Instruct-2410
+  trust_remote_code: true
+  load_in_4bit: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+
+training:
+  grpo_backend: trl
+  iterations: 200
+  prompts_per_iteration: 10
+  use_random_sampling: true
+  generations_per_prompt: 8
+  learning_rate: 5e-6
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  grad_clip_norm: 1.0
+  train_max_seq_len: 1024
+  max_new_tokens: 128
+  temperature: 0.7
+  top_p: 0.9
+  kl_beta: 0.1
+  use_mcts_after_iteration: 0
+  use_wandb: true
+  push_to_hub: true
+  hub_repo_id: mistral-hackaton-2026/codeforge
+  hub_fallback_repo_id: PAMF2/codeforge
+  hub_private: true
+  dry_run: false
+  use_unsloth: false
+
+reward:
+  stage_weights:
+    assemble: 0.20
+    link: 0.20
+    run: 0.15
+    correctness: 0.45
+  timeout_seconds: 12
+
+mcts:
+  simulations: 16
+  max_lines: 30
+  branch_factor: 3
+  exploration_constant: 1.414
+  max_depth: 10
+  min_tier: 2
+
+paths:
+  prompt_dataset: prompts/dataset.json
+  artifacts_dir: artifacts
+  checkpoints_dir: checkpoints

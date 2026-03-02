@@ -92,6 +92,18 @@ O runner `kaggle_autorun.py`:
 - retoma automaticamente de `checkpoints/iter_*`,
 - imprime heartbeat com GPU + progresso continuamente.
 
+Kaggle (2 comandos, arquitetura CodeForge 10h com Agent57 + Verifiable Reward + MCTS):
+```bash
+!git -C /kaggle/working/codeforge-asm pull || git clone https://github.com/PAMF2/codeforge-asm.git /kaggle/working/codeforge-asm
+!python /kaggle/working/codeforge-asm/scripts/kaggle_codeforge10h.py --hours 10 --base-config configs/grpo_config.codeforge10h.yaml
+```
+
+Este runner:
+- roda portfólio de políticas (`explorer`, `verifier`, `exploiter`) com seleção UCB (Agent57-style),
+- prioriza `correctness` no reward (VerIF-style),
+- ativa MCTS para prompts/tier difíceis (AlphaMath-style),
+- treina 1 iteração por ciclo para adaptar política online e fazer auto-resume por checkpoint.
+
 Backends de treino:
 - `training.grpo_backend: manual` -> update group-relative custom (padrão).
 - `training.grpo_backend: trl` -> usa `trl.GRPOTrainer` nativo.

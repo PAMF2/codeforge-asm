@@ -80,6 +80,18 @@ Treino MVP:
 python -m src.trainer --config configs/grpo_config.yaml
 ```
 
+Kaggle (2 comandos, auto-resume + logs verbosos por 18h):
+```bash
+!git -C /kaggle/working/codeforge-asm pull || git clone https://github.com/PAMF2/codeforge-asm.git /kaggle/working/codeforge-asm
+!python /kaggle/working/codeforge-asm/scripts/kaggle_autorun.py --hours 18
+```
+
+O runner `kaggle_autorun.py`:
+- carrega `HF_TOKEN`/`WANDB_API_KEY` dos Kaggle Secrets (com fallback de nomes),
+- aplica perfil estável para evitar travamento em iteração longa,
+- retoma automaticamente de `checkpoints/iter_*`,
+- imprime heartbeat com GPU + progresso continuamente.
+
 Backends de treino:
 - `training.grpo_backend: manual` -> update group-relative custom (padrão).
 - `training.grpo_backend: trl` -> usa `trl.GRPOTrainer` nativo.

@@ -19,6 +19,13 @@ def get_secret(name: str) -> str:
     return UserSecretsClient().get_secret(name)
 
 
+def get_secret_optional(name: str) -> str | None:
+    try:
+        return get_secret(name)
+    except Exception:
+        return None
+
+
 def ensure_utils_exec_error_guard(repo_root: Path) -> None:
     utils_path = repo_root / "src" / "utils.py"
     src = utils_path.read_text(encoding="utf-8")
@@ -89,7 +96,11 @@ def main() -> int:
 
     # Load secrets from Kaggle
     os.environ["HF_TOKEN"] = get_secret("HF_TOKEN")
-    os.environ["MISTRAL_API_KEY"] = get_secret("MISTRAL_API_KEY")
+    mistral_key = get_secret_optional("MISTRAL_API_KEY")
+    if mistral_key:
+        os.environ["MISTRAL_API_KEY"] = mistral_key
+    else:
+        print("[kaggle_bootstrap] MISTRAL_API_KEY not found; continuing without it")
     try:
         os.environ["WANDB_API_KEY"] = get_secret("WANDB_API_KEY")
     except Exception:

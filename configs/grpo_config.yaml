@@ -31,7 +31,7 @@ training:
   hub_repo_id: mistral-hackaton-2026/codeforge
   hub_fallback_repo_id: PAMF2/codeforge
   hub_private: true
-  dry_run: true
+  dry_run: false
   use_unsloth: false  # set true if unsloth is installed
 
 reward:

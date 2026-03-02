@@ -63,11 +63,16 @@ pip install -r requirements.txt
 ## Variáveis de ambiente
 Copie `.env.example` para `.env` e preencha:
 ```bash
+HF_TOKEN=...
 HUGGINGFACE_HUB_TOKEN=...
 WANDB_API_KEY=...
 MISTRAL_API_KEY=...
 WANDB_PROJECT=codeforge-asm
 ```
+
+Notas:
+- `HF_TOKEN` e `HUGGINGFACE_HUB_TOKEN` são aliases no projeto (pode usar um deles).
+- `MISTRAL_API_KEY` é opcional para o treino principal em `src.trainer`; use quando rodar scripts que chamam a API da Mistral.
 
 ## Execução
 Treino MVP:

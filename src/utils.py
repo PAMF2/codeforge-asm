@@ -69,3 +69,10 @@ def run_cmd(cmd: Iterable[str], timeout_seconds: int) -> subprocess.CompletedPro
             stdout="",
             stderr=f"Command not found: {exc}",
         )
+    except Exception as exc:
+        return subprocess.CompletedProcess(
+            cmd_list,
+            returncode=125,
+            stdout="",
+            stderr=f"Unexpected error: {exc}",
+        )

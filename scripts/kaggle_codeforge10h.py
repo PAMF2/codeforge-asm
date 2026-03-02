@@ -82,6 +82,31 @@ def ensure_system_deps() -> None:
     subprocess.run(["apt-get", "install", "-y", "nasm", "binutils"], check=False)
 
 
+def ensure_python_deps() -> None:
+    log("Ensuring Python deps for 4-bit training stack")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-U", "pip"], check=False)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-U",
+            "trl>=0.21,<0.24",
+            "peft>=0.17,<0.19",
+            "transformers>=4.57.1",
+            "accelerate>=1.8,<1.12",
+            "datasets>=4.0,<5.0",
+            "wandb>=0.20,<0.26",
+            "huggingface_hub>=0.34,<1.0",
+            "pyyaml>=6.0.2",
+            "mistralai>=1.0,<2.0",
+            "bitsandbytes>=0.46.1",
+        ],
+        check=False,
+    )
+
+
 def read_yaml(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -101,6 +126,47 @@ def latest_checkpoint_iter(ckpt_dir: Path) -> int:
         if m:
             out = max(out, int(m.group(1)))
     return out
+
+
+def maybe_restore_latest_hf_checkpoint(root: Path, ckpt_dir: Path, repo_id: str) -> None:
+    if latest_checkpoint_iter(ckpt_dir) >= 0:
+        return
+    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    if not token:
+        log("No HF token available; skipping checkpoint restore")
+        return
+    try:
+        from huggingface_hub import HfApi, snapshot_download
+    except Exception:
+        log("huggingface_hub missing; skipping checkpoint restore")
+        return
+
+    try:
+        api = HfApi(token=token)
+        files = api.list_repo_files(repo_id=repo_id, repo_type="model")
+        iters = sorted(
+            {
+                int(m.group(1))
+                for f in files
+                for m in [re.match(r"^checkpoints/iter_(\d+)/", f)]
+                if m
+            }
+        )
+        if not iters:
+            log(f"No checkpoints found on HF repo: {repo_id}")
+            return
+        last = iters[-1]
+        log(f"Restoring latest HF checkpoint: iter_{last} from {repo_id}")
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="model",
+            token=token,
+            local_dir=str(root),
+            allow_patterns=[f"checkpoints/iter_{last}/*"],
+            resume_download=True,
+        )
+    except Exception as exc:
+        log(f"HF restore failed: {exc}")
 
 
 def iteration_correct_rate(artifacts_dir: Path, iteration: int) -> float:
@@ -261,6 +327,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--runtime-config", default="configs/grpo_config.runtime.yaml")
     p.add_argument("--hours", type=float, default=10.0)
     p.add_argument("--target-iterations", type=int, default=200)
+    p.add_argument("--hub-repo-id", default="mistral-hackaton-2026/codeforge")
     p.add_argument("--retry-delay-sec", type=int, default=20)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
@@ -274,6 +341,7 @@ def main() -> int:
 
     load_env()
     ensure_system_deps()
+    ensure_python_deps()
 
     base_cfg_path = root / args.base_config
     runtime_cfg_path = root / args.runtime_config
@@ -281,6 +349,7 @@ def main() -> int:
     paths = base_cfg.get("paths", {})
     ckpt_dir = root / str(paths.get("checkpoints_dir", "checkpoints"))
     artifacts_dir = root / str(paths.get("artifacts_dir", "artifacts"))
+    maybe_restore_latest_hf_checkpoint(root, ckpt_dir, repo_id=args.hub_repo_id)
     deadline = time.time() + args.hours * 3600
 
     stats: dict[str, dict[str, float]] = {

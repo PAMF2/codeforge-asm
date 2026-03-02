@@ -196,16 +196,36 @@ class HFTextGenerator:
         )
         encoded = {k: v.to(self.model.device) for k, v in encoded.items()}
 
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **encoded,
-                do_sample=True,
-                temperature=temperature,
-                top_p=top_p,
-                max_new_tokens=max_new_tokens,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
+        # Generation does not need gradient checkpointing and can trigger noisy warnings.
+        # Temporarily disable it for faster/cleaner sampling, then restore.
+        gc_was_enabled = bool(getattr(self.model, "is_gradient_checkpointing", False))
+        use_cache_prev = getattr(getattr(self.model, "config", None), "use_cache", None)
+        try:
+            if gc_was_enabled and hasattr(self.model, "gradient_checkpointing_disable"):
+                self.model.gradient_checkpointing_disable()
+            if use_cache_prev is not None and hasattr(self.model, "config"):
+                self.model.config.use_cache = True
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **encoded,
+                    do_sample=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_new_tokens=max_new_tokens,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+        finally:
+            if use_cache_prev is not None and hasattr(self.model, "config"):
+                self.model.config.use_cache = use_cache_prev
+            if gc_was_enabled and hasattr(self.model, "gradient_checkpointing_enable"):
+                try:
+                    self.model.gradient_checkpointing_enable(
+                        gradient_checkpointing_kwargs={"use_reentrant": False}
+                    )
+                except Exception:
+                    self.model.gradient_checkpointing_enable()
 
         prompt_len = encoded["input_ids"].shape[1]
         completions = outputs[:, prompt_len:]

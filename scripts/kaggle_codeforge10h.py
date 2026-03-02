@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata as importlib_metadata
 import json
 import math
 import os
@@ -83,25 +84,73 @@ def ensure_system_deps() -> None:
 
 
 def ensure_python_deps() -> None:
-    log("Ensuring Python deps for 4-bit training stack")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-U", "pip"], check=False)
+    log("Ensuring Python deps for 4-bit training stack (fast mode)")
+
+    def _version_tuple(v: str) -> tuple[int, ...]:
+        parts = []
+        for token in re.split(r"[.+-]", v):
+            if token.isdigit():
+                parts.append(int(token))
+            else:
+                break
+        return tuple(parts)
+
+    def _installed(name: str) -> str | None:
+        try:
+            return importlib_metadata.version(name)
+        except Exception:
+            return None
+
+    # Fast path: skip pip resolver if core stack is already compatible.
+    trl_v = _installed("trl")
+    peft_v = _installed("peft")
+    tf_v = _installed("transformers")
+    acc_v = _installed("accelerate")
+    ds_v = _installed("datasets")
+    wb_v = _installed("wandb")
+    hf_v = _installed("huggingface_hub")
+    bnb_v = _installed("bitsandbytes")
+    mi_v = _installed("mistralai")
+    if (
+        trl_v
+        and peft_v
+        and tf_v
+        and acc_v
+        and ds_v
+        and wb_v
+        and hf_v
+        and bnb_v
+        and mi_v
+        and _version_tuple(tf_v) >= (4, 57, 1)
+        and _version_tuple(tf_v) < (5, 0, 0)
+        and _version_tuple(bnb_v) >= (0, 46, 1)
+    ):
+        log(
+            "Python deps already compatible; skipping pip install "
+            f"(transformers={tf_v}, bitsandbytes={bnb_v})"
+        )
+        return
+
+    log("Installing pinned runtime deps (one-time per fresh Kaggle session)")
     subprocess.run(
         [
             sys.executable,
             "-m",
             "pip",
             "install",
-            "-U",
-            "trl>=0.21,<0.24",
-            "peft>=0.17,<0.19",
-            "transformers>=4.57.1",
-            "accelerate>=1.8,<1.12",
-            "datasets>=4.0,<5.0",
-            "wandb>=0.20,<0.26",
-            "huggingface_hub>=0.34,<1.0",
+            "--disable-pip-version-check",
+            "--upgrade-strategy",
+            "only-if-needed",
+            "trl==0.23.1",
+            "peft==0.18.1",
+            "transformers==4.57.6",
+            "accelerate==1.11.0",
+            "datasets==4.6.1",
+            "wandb==0.25.0",
+            "huggingface_hub==0.36.2",
             "pyyaml>=6.0.2",
-            "mistralai>=1.0,<2.0",
-            "bitsandbytes>=0.46.1",
+            "mistralai==1.12.4",
+            "bitsandbytes==0.49.2",
         ],
         check=False,
     )

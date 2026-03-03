@@ -11,12 +11,13 @@ assembly_swe/
   schema.task.json
   datasets/
     sample_dev.jsonl
+    dev_v1_30.jsonl
   examples/
     sample_predictions.jsonl
   tools/
     evaluate.py
     eval_all_iters.py
-    report_html.py
+    benchmark_suite.py
     validate_dataset.py
 ```
 
@@ -113,17 +114,41 @@ python assembly_swe/tools/validate_dataset.py \
   --tasks assembly_swe/datasets/sample_dev.jsonl
 ```
 
-## Generate publication-friendly HTML report
-
-```bash
-python assembly_swe/tools/report_html.py \
-  --aggregate assembly_swe/results/all_iters/aggregate.json
-```
-
-This writes `report.html` next to the aggregate by default.
 
 ## Notes
 
 - Evaluator uses the same deterministic verification core (`nasm` + `ld` + run)
   via `src.reward.RewardPipeline`.
 - This protocol is intentionally simple and reproducible for local and Kaggle runs.
+
+## Paper-grade workflow
+
+1. Validate tasks:
+```bash
+python assembly_swe/tools/validate_dataset.py \
+  --tasks assembly_swe/datasets/dev_v1_30.jsonl
+```
+
+2. Evaluate checkpoints for one dataset:
+```bash
+python assembly_swe/tools/eval_all_iters.py \
+  --repo-root . \
+  --tasks assembly_swe/datasets/dev_v1_30.jsonl \
+  --iter-start 1 --iter-end 30 \
+  --ks 1,3,5 \
+  --outdir assembly_swe/results/dev_v1_30 \
+  --load-in-4bit \
+  --hub-repo-id mistral-hackaton-2026/codeforge
+```
+
+3. Evaluate multiple datasets/splits:
+```bash
+python assembly_swe/tools/benchmark_suite.py \
+  --repo-root . \
+  --tasks assembly_swe/datasets/sample_dev.jsonl,assembly_swe/datasets/dev_v1_30.jsonl \
+  --iter-start 1 --iter-end 30 \
+  --ks 1,3,5 \
+  --outdir assembly_swe/results/suite \
+  --load-in-4bit \
+  --hub-repo-id mistral-hackaton-2026/codeforge
+```

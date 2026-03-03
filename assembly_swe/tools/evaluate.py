@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,6 +79,33 @@ def parse_ks(raw: str) -> list[int]:
     return out
 
 
+def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
+    if total <= 0:
+        return (0.0, 0.0)
+    p = successes / total
+    denom = 1.0 + (z * z) / total
+    center = (p + (z * z) / (2 * total)) / denom
+    margin = (z / denom) * math.sqrt((p * (1.0 - p) / total) + ((z * z) / (4 * total * total)))
+    low = max(0.0, center - margin)
+    high = min(1.0, center + margin)
+    return (low, high)
+
+
+def bootstrap_ci(values: list[float], n_bootstrap: int = 1000, alpha: float = 0.05, seed: int = 42) -> tuple[float, float]:
+    if not values:
+        return (0.0, 0.0)
+    rng = random.Random(seed)
+    n = len(values)
+    means: list[float] = []
+    for _ in range(n_bootstrap):
+        sample = [values[rng.randrange(n)] for _ in range(n)]
+        means.append(sum(sample) / n)
+    means.sort()
+    low_i = int((alpha / 2) * (n_bootstrap - 1))
+    high_i = int((1 - alpha / 2) * (n_bootstrap - 1))
+    return (means[low_i], means[high_i])
+
+
 def leaderboard_markdown(summary: dict[str, Any]) -> str:
     lines = [
         "# Assembly-SWE Leaderboard Summary",
@@ -88,6 +117,7 @@ def leaderboard_markdown(summary: dict[str, Any]) -> str:
         f"- link_rate@1: **{summary['link_rate_at_1']:.4f}**",
         f"- run_rate@1: **{summary['run_rate_at_1']:.4f}**",
         f"- avg_reward@1: **{summary['avg_reward_at_1']:.4f}**",
+        f"- correct@1 CI95 (Wilson): **[{summary['correct_rate_at_1_ci95']['low']:.4f}, {summary['correct_rate_at_1_ci95']['high']:.4f}]**",
         "",
         "## pass@k",
         "",
@@ -95,17 +125,24 @@ def leaderboard_markdown(summary: dict[str, Any]) -> str:
         "|---:|---:|",
     ]
     for k, v in summary["pass_at"].items():
-        lines.append(f"| {k} | {v:.4f} |")
+        ci = summary.get("pass_at_ci95", {}).get(str(k), {})
+        if ci:
+            lines.append(f"| {k} | {v:.4f} ({ci['low']:.4f}..{ci['high']:.4f}) |")
+        else:
+            lines.append(f"| {k} | {v:.4f} |")
 
     lines += [
         "",
         "## Tier Breakdown",
         "",
-        "| Tier | tasks | pass@1 |",
-        "|---:|---:|---:|",
+        "| Tier | tasks | pass@1 | assembly@1 | link@1 | run@1 |",
+        "|---:|---:|---:|---:|---:|---:|",
     ]
     for tier, row in summary["tier_breakdown"].items():
-        lines.append(f"| {tier} | {row['tasks']} | {row['pass_at_1']:.4f} |")
+        lines.append(
+            f"| {tier} | {row['tasks']} | {row['pass_at_1']:.4f} | "
+            f"{row['assembly_rate_at_1']:.4f} | {row['link_rate_at_1']:.4f} | {row['run_rate_at_1']:.4f} |"
+        )
     lines.append("")
     return "\n".join(lines)
 
@@ -188,7 +225,28 @@ def main() -> None:
     for tier, rows in sorted(tier_rows.items()):
         t_tasks = len(rows)
         t_pass1 = sum(1 for r in rows if r["correct"]) / max(1, t_tasks)
-        tier_breakdown[str(tier)] = {"tasks": t_tasks, "pass_at_1": t_pass1}
+        t_assembly = sum(1 for r in rows if r["assembled"]) / max(1, t_tasks)
+        t_link = sum(1 for r in rows if r["linked"]) / max(1, t_tasks)
+        t_run = sum(1 for r in rows if r["ran"]) / max(1, t_tasks)
+        tier_breakdown[str(tier)] = {
+            "tasks": t_tasks,
+            "pass_at_1": t_pass1,
+            "assembly_rate_at_1": t_assembly,
+            "link_rate_at_1": t_link,
+            "run_rate_at_1": t_run,
+        }
+
+    stage_failed_counts: dict[str, int] = {}
+    for r in top1_rows:
+        key = str(r.get("stage_failed", "unknown"))
+        stage_failed_counts[key] = stage_failed_counts.get(key, 0) + 1
+
+    correct_ci = wilson_interval(correct, tasks_total)
+    pass_at_ci95: dict[str, Any] = {}
+    for k in ks:
+        low, high = wilson_interval(correct_by_k[k], tasks_total)
+        pass_at_ci95[str(k)] = {"low": low, "high": high}
+    reward_ci = bootstrap_ci([float(r["reward"]) for r in top1_rows], n_bootstrap=1000, alpha=0.05, seed=42)
 
     summary = {
         "tasks_total": tasks_total,
@@ -198,7 +256,11 @@ def main() -> None:
         "link_rate_at_1": linked / max(1, tasks_total),
         "run_rate_at_1": ran / max(1, tasks_total),
         "correct_rate_at_1": correct / max(1, tasks_total),
+        "correct_rate_at_1_ci95": {"low": correct_ci[0], "high": correct_ci[1]},
         "avg_reward_at_1": avg_reward,
+        "avg_reward_at_1_bootstrap_ci95": {"low": reward_ci[0], "high": reward_ci[1]},
+        "pass_at_ci95": pass_at_ci95,
+        "stage_failed_counts_at_1": stage_failed_counts,
         "tier_breakdown": tier_breakdown,
         "inputs": {
             "tasks": str(tasks_path),

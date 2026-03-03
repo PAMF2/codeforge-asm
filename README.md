@@ -129,6 +129,16 @@ Avaliação (predições externas):
 python eval/evaluate.py --predictions artifacts/sample_predictions.json
 ```
 
+Benchmark estilo SWE para Assembly:
+```bash
+python assembly_swe/tools/evaluate.py \
+  --tasks assembly_swe/datasets/sample_dev.jsonl \
+  --predictions assembly_swe/examples/sample_predictions.jsonl \
+  --ks 1,3,5 \
+  --outdir assembly_swe/results/latest
+```
+Detalhes em `assembly_swe/README.md`.
+
 ## Estado Atual
 - Reward pipeline em 4 estágios implementado.
 - Best-of-N implementado.

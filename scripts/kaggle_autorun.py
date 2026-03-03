@@ -139,16 +139,19 @@ def _has_lora_weights(iter_dir: Path) -> bool:
 def latest_iter(ckpt_dir: Path) -> int:
     if not ckpt_dir.exists():
         return -1
-    out = -1
+    latest_valid = -1
+    latest_any = -1
     for p in ckpt_dir.iterdir():
         if not p.is_dir():
             continue
         m = re.match(r"iter_(\d+)$", p.name)
         if m:
-            # Ignore partial checkpoint folders (missing adapter weights).
+            iter_id = int(m.group(1))
+            latest_any = max(latest_any, iter_id)
+            # Prefer valid checkpoints, but keep latest folder as fallback.
             if _has_lora_weights(p):
-                out = max(out, int(m.group(1)))
-    return out
+                latest_valid = max(latest_valid, iter_id)
+    return latest_valid if latest_valid >= 0 else latest_any
 
 
 def gpu_line() -> str:

@@ -49,9 +49,10 @@ except Exception:  # pragma: no cover
     Dataset = None
 
 try:
-    from huggingface_hub import HfApi, upload_folder
+    from huggingface_hub import HfApi, snapshot_download, upload_folder
 except Exception:  # pragma: no cover
     HfApi = None
+    snapshot_download = None
     upload_folder = None
 
 try:
@@ -740,13 +741,53 @@ def _has_lora_weights(checkpoint_dir: Path) -> bool:
     return (checkpoint_dir / "adapter_model.safetensors").exists() or (checkpoint_dir / "adapter_model.bin").exists()
 
 
-def _resolve_resume_checkpoint(checkpoints_dir: Path, start_iter: int) -> tuple[str | None, int]:
+def _hydrate_checkpoint_from_hub(cfg: RuntimeConfig, checkpoints_dir: Path, iter_id: int) -> bool:
+    if snapshot_download is None:
+        return False
+
+    training = cfg.raw.get("training", {})
+    repo_candidates = [
+        str(training.get("hub_repo_id", "")).strip(),
+        str(training.get("hub_fallback_repo_id", "")).strip(),
+    ]
+    repo_ids = [r for r in repo_candidates if r]
+    if not repo_ids:
+        return False
+
+    token = _hf_token_from_env()
+    local_root = checkpoints_dir.parent
+    prefix = f"{checkpoints_dir.name}/iter_{iter_id}/"
+    pattern = f"{prefix}*"
+
+    for repo_id in repo_ids:
+        try:
+            print(f"[CodeForge] Attempting checkpoint hydration from {repo_id} ({pattern})")
+            snapshot_download(
+                repo_id=repo_id,
+                repo_type="model",
+                token=token,
+                local_dir=str(local_root),
+                allow_patterns=[pattern],
+            )
+            if _has_lora_weights(checkpoints_dir / f"iter_{iter_id}"):
+                print(f"[CodeForge] Hydrated iter_{iter_id} from {repo_id}")
+                return True
+        except Exception as exc:
+            print(f"[CodeForge] Hydration failed from {repo_id}: {exc}")
+            continue
+
+    return False
+
+
+def _resolve_resume_checkpoint(cfg: RuntimeConfig, checkpoints_dir: Path, start_iter: int) -> tuple[str | None, int]:
     if start_iter <= 0:
         return None, start_iter
 
     requested_prev = start_iter - 1
     for it in range(requested_prev, -1, -1):
         ckpt_candidate = checkpoints_dir / f"iter_{it}"
+        if not ckpt_candidate.exists() or not _has_lora_weights(ckpt_candidate):
+            _hydrate_checkpoint_from_hub(cfg, checkpoints_dir, it)
         if not ckpt_candidate.exists():
             continue
         if _has_lora_weights(ckpt_candidate):
@@ -796,7 +837,7 @@ def main() -> None:
     )
 
     # Resolve resume checkpoint from iter_{start_iter - 1}, with fallback for partial checkpoints.
-    resume_path, adjusted_start_iter = _resolve_resume_checkpoint(checkpoints_dir, start_iter)
+    resume_path, adjusted_start_iter = _resolve_resume_checkpoint(cfg, checkpoints_dir, start_iter)
     if resume_path is not None:
         print(f"[CodeForge] Resuming LoRA from checkpoint: {resume_path}")
     if adjusted_start_iter != start_iter:

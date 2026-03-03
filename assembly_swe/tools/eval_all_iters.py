@@ -15,12 +15,34 @@ def run(cmd: list[str], cwd: Path) -> None:
     subprocess.run(cmd, cwd=str(cwd), check=True)
 
 
+def ensure_hf_token() -> str | None:
+    tok = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    if tok:
+        return tok
+    try:
+        from kaggle_secrets import UserSecretsClient  # type: ignore
+    except Exception:
+        return None
+    client = UserSecretsClient()
+    for name in ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_API_TOKEN", "HF_KEY"):
+        try:
+            val = client.get_secret(name)
+        except Exception:
+            val = None
+        if val:
+            os.environ["HF_TOKEN"] = val.strip()
+            os.environ["HUGGINGFACE_HUB_TOKEN"] = val.strip()
+            print(f"[eval_all_iters] loaded HF token from kaggle:{name}", flush=True)
+            return val.strip()
+    return None
+
+
 def ensure_checkpoint_local(repo_root: Path, iter_idx: int, hub_repo_id: str) -> bool:
     ckpt_dir = repo_root / "checkpoints" / f"iter_{iter_idx}"
     if ckpt_dir.exists():
         return True
 
-    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    token = ensure_hf_token()
     if not token:
         print(f"[eval_all_iters] skip iter_{iter_idx}: local checkpoint missing and HF token not found", flush=True)
         return False
@@ -147,6 +169,7 @@ def main() -> None:
     tasks_path = (repo_root / args.tasks).resolve()
     out_root = (repo_root / args.outdir).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
+    ensure_hf_token()
 
     rows: list[dict] = []
     for i in range(args.iter_start, args.iter_end + 1):

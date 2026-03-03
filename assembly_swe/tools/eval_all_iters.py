@@ -39,8 +39,14 @@ def ensure_hf_token() -> str | None:
 
 def ensure_checkpoint_local(repo_root: Path, iter_idx: int, hub_repo_id: str) -> bool:
     ckpt_dir = repo_root / "checkpoints" / f"iter_{iter_idx}"
+    required = ("adapter_config.json", "adapter_model.safetensors")
     if ckpt_dir.exists():
-        return True
+        if all((ckpt_dir / name).exists() for name in required):
+            return True
+        print(
+            f"[eval_all_iters] checkpoint iter_{iter_idx} exists but is incomplete; refetching from HF",
+            flush=True,
+        )
 
     token = ensure_hf_token()
     if not token:
@@ -60,7 +66,7 @@ def ensure_checkpoint_local(repo_root: Path, iter_idx: int, hub_repo_id: str) ->
     except Exception as exc:
         print(f"[eval_all_iters] skip iter_{iter_idx}: HF fetch failed ({exc})", flush=True)
         return False
-    return ckpt_dir.exists()
+    return ckpt_dir.exists() and all((ckpt_dir / name).exists() for name in required)
 
 
 def maybe_run_iter(
@@ -172,6 +178,7 @@ def main() -> None:
     ensure_hf_token()
 
     rows: list[dict] = []
+    skipped: list[dict] = []
     for i in range(args.iter_start, args.iter_end + 1):
         try:
             item = maybe_run_iter(
@@ -187,6 +194,7 @@ def main() -> None:
             print(f"[eval_all_iters] iter_{i} failed: {exc}", flush=True)
             item = None
         if item is None:
+            skipped.append({"iter": i, "reason": "missing_or_failed"})
             continue
         rows.append(item)
         print(
@@ -205,8 +213,10 @@ def main() -> None:
         "iter_start": args.iter_start,
         "iter_end": args.iter_end,
         "count_evaluated": len(rows),
+        "count_skipped": len(skipped),
         "best_by_correct_rate": best,
         "rows": rows,
+        "skipped": skipped,
     }
     agg_path = out_root / "aggregate.json"
     agg_path.write_text(json.dumps(agg, indent=2), encoding="utf-8")

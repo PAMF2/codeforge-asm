@@ -15,6 +15,9 @@ assembly_swe/
     sample_predictions.jsonl
   tools/
     evaluate.py
+    eval_all_iters.py
+    report_html.py
+    validate_dataset.py
 ```
 
 ## Task format (JSONL)
@@ -102,6 +105,22 @@ Outputs:
 - `summary.json`
 - `leaderboard.md`
 - `rows_top1.jsonl`
+
+## Validate a dataset before runs
+
+```bash
+python assembly_swe/tools/validate_dataset.py \
+  --tasks assembly_swe/datasets/sample_dev.jsonl
+```
+
+## Generate publication-friendly HTML report
+
+```bash
+python assembly_swe/tools/report_html.py \
+  --aggregate assembly_swe/results/all_iters/aggregate.json
+```
+
+This writes `report.html` next to the aggregate by default.
 
 ## Notes
 

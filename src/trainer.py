@@ -736,6 +736,32 @@ def maybe_build_train_bundle(cfg: RuntimeConfig, resume_from: str | None = None)
     return TrainBundle(model=model, tokenizer=tokenizer, optimizer=optimizer, generator=generator)
 
 
+def _has_lora_weights(checkpoint_dir: Path) -> bool:
+    return (checkpoint_dir / "adapter_model.safetensors").exists() or (checkpoint_dir / "adapter_model.bin").exists()
+
+
+def _resolve_resume_checkpoint(checkpoints_dir: Path, start_iter: int) -> tuple[str | None, int]:
+    if start_iter <= 0:
+        return None, start_iter
+
+    requested_prev = start_iter - 1
+    for it in range(requested_prev, -1, -1):
+        ckpt_candidate = checkpoints_dir / f"iter_{it}"
+        if not ckpt_candidate.exists():
+            continue
+        if _has_lora_weights(ckpt_candidate):
+            if it != requested_prev:
+                print(
+                    f"[CodeForge] WARNING: checkpoint iter_{requested_prev} incomplete/missing; "
+                    f"falling back to iter_{it}"
+                )
+            return str(ckpt_candidate), it + 1
+        print(f"[CodeForge] WARNING: checkpoint iter_{it} exists but has no adapter_model.*; skipping")
+
+    print("[CodeForge] WARNING: no valid LoRA checkpoint found; starting fresh")
+    return None, start_iter
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/grpo_config.yaml")
@@ -769,15 +795,13 @@ def main() -> None:
         top_p=float(training["top_p"]),
     )
 
-    # Resolve resume checkpoint from iter_{start_iter - 1}
-    resume_path: str | None = None
-    if start_iter > 0:
-        ckpt_candidate = checkpoints_dir / f"iter_{start_iter - 1}"
-        if ckpt_candidate.exists():
-            resume_path = str(ckpt_candidate)
-            print(f"[CodeForge] Resuming LoRA from checkpoint: {resume_path}")
-        else:
-            print(f"[CodeForge] WARNING: checkpoint {ckpt_candidate} not found; starting fresh LoRA")
+    # Resolve resume checkpoint from iter_{start_iter - 1}, with fallback for partial checkpoints.
+    resume_path, adjusted_start_iter = _resolve_resume_checkpoint(checkpoints_dir, start_iter)
+    if resume_path is not None:
+        print(f"[CodeForge] Resuming LoRA from checkpoint: {resume_path}")
+    if adjusted_start_iter != start_iter:
+        print(f"[CodeForge] Adjusted start iteration: {start_iter} -> {adjusted_start_iter}")
+        start_iter = adjusted_start_iter
 
     train_bundle = maybe_build_train_bundle(cfg, resume_from=resume_path)
     generator = train_bundle.generator if train_bundle is not None else DummyGenerator()
@@ -804,8 +828,12 @@ def main() -> None:
         print(f"[CodeForge] Resuming from iteration {start_iter} / {cfg.iterations}")
 
     use_wandb = bool(training.get("use_wandb", True)) and wandb is not None
+    if use_wandb and not os.environ.get("WANDB_API_KEY"):
+        print("[CodeForge] WANDB_API_KEY not set — disabling W&B to avoid interactive prompt")
+        use_wandb = False
     run = None
     if use_wandb:
+        wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
         run = wandb.init(project=cfg.raw["project"]["name"], config=cfg.raw, resume="allow")
 
     print("[CodeForge] Starting loop")

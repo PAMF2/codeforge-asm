@@ -132,6 +132,10 @@ def checkpoints_dir(root: Path, cfg: dict[str, Any]) -> Path:
     return root / str(ck)
 
 
+def _has_lora_weights(iter_dir: Path) -> bool:
+    return (iter_dir / "adapter_model.safetensors").exists() or (iter_dir / "adapter_model.bin").exists()
+
+
 def latest_iter(ckpt_dir: Path) -> int:
     if not ckpt_dir.exists():
         return -1
@@ -141,7 +145,9 @@ def latest_iter(ckpt_dir: Path) -> int:
             continue
         m = re.match(r"iter_(\d+)$", p.name)
         if m:
-            out = max(out, int(m.group(1)))
+            # Ignore partial checkpoint folders (missing adapter weights).
+            if _has_lora_weights(p):
+                out = max(out, int(m.group(1)))
     return out
 
 

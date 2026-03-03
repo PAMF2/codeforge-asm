@@ -80,6 +80,24 @@ python assembly_swe/tools/evaluate.py \
   --outdir assembly_swe/results/latest
 ```
 
+## Real model evaluation (checkpoint)
+
+Generate real predictions from a trained checkpoint and evaluate:
+
+```bash
+python assembly_swe/tools/generate_predictions.py \
+  --tasks assembly_swe/datasets/sample_dev.jsonl \
+  --checkpoint-dir checkpoints/iter_30 \
+  --out assembly_swe/results/iter30_predictions.jsonl \
+  --load-in-4bit
+
+python assembly_swe/tools/evaluate.py \
+  --tasks assembly_swe/datasets/sample_dev.jsonl \
+  --predictions assembly_swe/results/iter30_predictions.jsonl \
+  --ks 1,3,5 \
+  --outdir assembly_swe/results/iter30_eval
+```
+
 Outputs:
 - `summary.json`
 - `leaderboard.md`

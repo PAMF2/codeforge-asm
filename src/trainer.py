@@ -474,6 +474,21 @@ def maybe_build_trl_bundle(
         "reward_funcs": [reward_fn],
         "processing_class": train_bundle.tokenizer,
     }
+
+    # TRL may expect `model.warnings_issued` on some transformers/peft versions.
+    # Ensure this exists on wrapped and base models before trainer construction.
+    model_ref = train_bundle.model
+    for candidate in (
+        model_ref,
+        getattr(model_ref, "base_model", None),
+        getattr(getattr(model_ref, "base_model", None), "model", None),
+    ):
+        if candidate is not None and not hasattr(candidate, "warnings_issued"):
+            try:
+                setattr(candidate, "warnings_issued", {})
+            except Exception:
+                pass
+
     filtered_trainer_kwargs = _filter_kwargs(GRPOTrainer.__init__, trainer_kwargs)
     trainer = GRPOTrainer(**filtered_trainer_kwargs)
     return TRLBundle(trainer=trainer)

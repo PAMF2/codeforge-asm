@@ -24,6 +24,7 @@ SUPERCODER_BASE_MODEL="${SUPERCODER_BASE_MODEL:-}"
 MERGE_DEVICE="${MERGE_DEVICE:-auto}"
 FORCE_REMERGE="${FORCE_REMERGE:-0}"
 SKIP_BASELINE="${SKIP_BASELINE:-0}"
+MIN_CPU_MERGE_RAM_GB="${MIN_CPU_MERGE_RAM_GB:-20}"
 
 if [[ -z "${MODEL_UNDER_TEST}" ]]; then
   echo "ERROR: missing model_under_test"
@@ -78,6 +79,7 @@ import os
 import re
 import sys
 from pathlib import Path
+import platform
 
 model_id = sys.argv[1]
 root_dir = sys.argv[2]
@@ -85,6 +87,23 @@ base_override = sys.argv[3].strip()
 token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
 merge_device = os.environ.get("MERGE_DEVICE", "auto").strip().lower()
 force_remerge = os.environ.get("FORCE_REMERGE", "0").strip() == "1"
+min_cpu_merge_ram_gb = int(os.environ.get("MIN_CPU_MERGE_RAM_GB", "20"))
+
+def system_ram_gb() -> float:
+    if platform.system().lower() == "linux":
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        parts = line.split()
+                        # MemTotal in kB
+                        kb = int(parts[1])
+                        return kb / 1024 / 1024
+        except Exception:
+            pass
+    return 0.0
+
+ram_gb = system_ram_gb()
 
 def latest_local_adapter_dir(base: Path) -> Path | None:
     ckpt_root = base / "checkpoints"
@@ -218,6 +237,7 @@ offload_dir = Path(root_dir) / "offload" / safe_tag
 offload_dir.mkdir(parents=True, exist_ok=True)
 
 def merge_with(device_choice: str):
+    print(f"[merge] device={device_choice} base_model={base_model}", file=sys.stderr, flush=True)
     if device_choice == "cpu":
         base_local = AutoModelForCausalLM.from_pretrained(
             base_model,
@@ -252,6 +272,11 @@ if merge_device not in {"auto", "cpu", "gpu"}:
     raise SystemExit(f"Invalid MERGE_DEVICE={merge_device}. Use auto|cpu|gpu.")
 
 if merge_device == "cpu":
+    if ram_gb and ram_gb < min_cpu_merge_ram_gb:
+        raise SystemExit(
+            f"CPU merge blocked: system RAM is {ram_gb:.1f} GB (< {min_cpu_merge_ram_gb} GB). "
+            "Use MERGE_DEVICE=gpu, switch to a smaller model, or run in a high-RAM runtime."
+        )
     merged = merge_with("cpu")
 elif merge_device == "gpu":
     merged = merge_with("gpu")
@@ -261,6 +286,12 @@ else:
     except torch.OutOfMemoryError:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        if ram_gb and ram_gb < min_cpu_merge_ram_gb:
+            raise SystemExit(
+                f"GPU merge ran out of memory and CPU fallback is disabled due to low system RAM "
+                f"({ram_gb:.1f} GB < {min_cpu_merge_ram_gb} GB). "
+                "Use a bigger GPU, smaller model, or high-RAM runtime."
+            )
         merged = merge_with("cpu")
 
 merged.save_pretrained(out_dir, safe_serialization=True)

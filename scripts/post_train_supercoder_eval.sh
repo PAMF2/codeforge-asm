@@ -41,15 +41,25 @@ cd "${SUPERCODER_DIR}"
 
 echo "[2/5] Install system deps"
 apt-get update -y
-apt-get install -y hyperfine build-essential
+apt-get install -y hyperfine build-essential python3-venv
 
 echo "[3/5] Install Python deps"
 if [[ "${USE_VENV}" == "1" ]]; then
   if [[ ! -d "${SUPERCODER_VENV_DIR}" ]]; then
-    python -m venv "${SUPERCODER_VENV_DIR}"
+    if ! python -m venv "${SUPERCODER_VENV_DIR}"; then
+      echo "[warn] venv creation failed; falling back to global Python env"
+      USE_VENV="0"
+    fi
   fi
-  # shellcheck disable=SC1090
-  source "${SUPERCODER_VENV_DIR}/bin/activate"
+  if [[ "${USE_VENV}" == "1" ]]; then
+    # shellcheck disable=SC1090
+    source "${SUPERCODER_VENV_DIR}/bin/activate"
+    if ! python -m pip --version >/dev/null 2>&1; then
+      echo "[warn] venv is missing pip; falling back to global Python env"
+      deactivate || true
+      USE_VENV="0"
+    fi
+  fi
 fi
 
 if [[ "${SKIP_INSTALL}" != "1" ]]; then
@@ -166,4 +176,3 @@ PAPER_JSON="${BASE_DIR}/${PAPER_TAG}/num_iterations_1/0-shot/best_of_1/problem_r
 
 echo "model_under_test_json=${MODEL_JSON}"
 echo "paper_model_json=${PAPER_JSON}"
-

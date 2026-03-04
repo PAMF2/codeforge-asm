@@ -73,6 +73,11 @@ if [[ "${SKIP_INSTALL}" != "1" ]]; then
 fi
 
 echo "[3b/5] Resolve eval model (supports full model or LoRA adapter)"
+if [[ "${INFERENCE_ENGINE}" != "sglang" ]]; then
+  # API engines (openai/together/claude/gemini) do not need local merge.
+  MODEL_UNDER_TEST_RESOLVED="${MODEL_UNDER_TEST}"
+  echo "model_under_test_resolved=${MODEL_UNDER_TEST_RESOLVED} (direct; inference_engine=${INFERENCE_ENGINE})"
+else
 MODEL_UNDER_TEST_RESOLVED="$(python - "${MODEL_UNDER_TEST}" "${ROOT_DIR}" "${SUPERCODER_BASE_MODEL}" <<'PY'
 import json
 import os
@@ -325,6 +330,7 @@ print(str(out_dir))
 PY
 )"
 echo "model_under_test_resolved=${MODEL_UNDER_TEST_RESOLVED}"
+fi
 
 echo "[4/5] Evaluate model_under_test=${MODEL_UNDER_TEST_RESOLVED}"
 python src/evaluate.py \

@@ -21,6 +21,7 @@ SKIP_INSTALL="${SKIP_INSTALL:-0}"
 INFERENCE_ENGINE="${INFERENCE_ENGINE:-sglang}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 SUPERCODER_BASE_MODEL="${SUPERCODER_BASE_MODEL:-}"
+MERGE_DEVICE="${MERGE_DEVICE:-auto}"
 
 if [[ -z "${MODEL_UNDER_TEST}" ]]; then
   echo "ERROR: missing model_under_test"
@@ -79,6 +80,7 @@ model_id = sys.argv[1]
 root_dir = sys.argv[2]
 base_override = sys.argv[3].strip()
 token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+merge_device = os.environ.get("MERGE_DEVICE", "auto").strip().lower()
 
 def latest_local_adapter_dir(base: Path) -> Path | None:
     ckpt_root = base / "checkpoints"
@@ -182,6 +184,7 @@ if not base_model:
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
+import torch
 
 safe_tag = model_id.replace("/", "__").replace(":", "_")
 out_dir = Path(root_dir) / "merged_models" / safe_tag
@@ -194,22 +197,52 @@ offload_dir = Path(root_dir) / "offload" / safe_tag
 offload_dir.mkdir(parents=True, exist_ok=True)
 
 base = AutoModelForCausalLM.from_pretrained(
-    base_model,
-    token=token,
-    torch_dtype="auto",
-    device_map="auto",
-    offload_folder=str(offload_dir),
-    offload_state_dict=True,
-    trust_remote_code=True,
-)
-adapted = PeftModel.from_pretrained(
-    base,
-    model_source,
-    token=token,
-    offload_folder=str(offload_dir),
-    offload_state_dict=True,
-)
-merged = adapted.merge_and_unload()
+def merge_with(device_choice: str):
+    if device_choice == "cpu":
+        base_local = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            token=token,
+            torch_dtype=torch.float16,
+            device_map={"": "cpu"},
+            trust_remote_code=True,
+            low_cpu_mem_usage=True,
+        )
+        adapted_local = PeftModel.from_pretrained(base_local, model_source, token=token)
+        return adapted_local.merge_and_unload()
+
+    base_local = AutoModelForCausalLM.from_pretrained(
+        base_model,
+        token=token,
+        torch_dtype="auto",
+        device_map="auto",
+        offload_folder=str(offload_dir),
+        offload_state_dict=True,
+        trust_remote_code=True,
+    )
+    adapted_local = PeftModel.from_pretrained(
+        base_local,
+        model_source,
+        token=token,
+        offload_folder=str(offload_dir),
+        offload_state_dict=True,
+    )
+    return adapted_local.merge_and_unload()
+
+if merge_device not in {"auto", "cpu", "gpu"}:
+    raise SystemExit(f"Invalid MERGE_DEVICE={merge_device}. Use auto|cpu|gpu.")
+
+if merge_device == "cpu":
+    merged = merge_with("cpu")
+elif merge_device == "gpu":
+    merged = merge_with("gpu")
+else:
+    try:
+        merged = merge_with("gpu")
+    except torch.OutOfMemoryError:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        merged = merge_with("cpu")
+
 merged.save_pretrained(out_dir, safe_serialization=True)
 
 try:

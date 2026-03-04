@@ -71,6 +71,7 @@ fi
 
 echo "[3b/5] Resolve eval model (supports full model or LoRA adapter)"
 MODEL_UNDER_TEST_RESOLVED="$(python - "${MODEL_UNDER_TEST}" "${ROOT_DIR}" "${SUPERCODER_BASE_MODEL}" <<'PY'
+import json
 import os
 import re
 import sys
@@ -243,6 +244,26 @@ else:
         merged = merge_with("cpu")
 
 merged.save_pretrained(out_dir, safe_serialization=True)
+
+# Ensure merged config has `architectures` for sglang compatibility.
+cfg_path = out_dir / "config.json"
+if cfg_path.is_file():
+    try:
+        with cfg_path.open("r", encoding="utf-8") as f:
+            cfg_json = json.load(f)
+        if not cfg_json.get("architectures"):
+            base_arch = None
+            try:
+                base_cfg = AutoConfig.from_pretrained(base_model, token=token, trust_remote_code=True)
+                base_arch = getattr(base_cfg, "architectures", None)
+            except Exception:
+                base_arch = None
+            cfg_json["architectures"] = base_arch or ["MistralForCausalLM"]
+            with cfg_path.open("w", encoding="utf-8") as f:
+                json.dump(cfg_json, f, indent=2)
+    except Exception:
+        # Best effort only; do not fail the run for config patching issues.
+        pass
 
 try:
     tok = AutoTokenizer.from_pretrained(model_source, token=token, trust_remote_code=True)

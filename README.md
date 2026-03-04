@@ -139,6 +139,38 @@ python assembly_swe/tools/evaluate.py \
 ```
 Detalhes em `assembly_swe/README.md`.
 
+## Pos-Treino: Serie de Comandos (Kaggle/Colab)
+Quando terminar o treino, rode esta sequencia para avaliar o modelo no protocolo do paper SuperCoder.
+
+1. Preparar repo atualizado:
+```bash
+%cd /content
+!git -C /content/codeforge-asm pull || git clone https://github.com/PAMF2/codeforge-asm.git /content/codeforge-asm
+```
+
+2. (Opcional) Conferir em qual iteracao esta no W&B:
+```bash
+!python /content/codeforge-asm/scripts/wb_status.py --entity pedroafonsomalheiros30-aaa --project codeforge-asm --latest 3
+```
+
+3. Rodar benchmark SuperCoder (modelo vs baseline do paper):
+```bash
+%cd /content/codeforge-asm
+!bash scripts/post_train_supercoder_eval.sh "mistral-hackaton-2026/codeforge" "LLM4Code/Superoptimizer_Qwen7B"
+```
+
+4. Comparar resultados finais:
+```bash
+!python /content/codeforge-asm/scripts/supercoder_compare_results.py \
+  --results-root /content/SuperCoder/results/main/llm_superoptimizer_ds_val \
+  --model-under-test-tag codeforge \
+  --paper-model-tag Superoptimizer_Qwen7B
+```
+
+Notas:
+- Se `mistral-hackaton-2026/codeforge` for privado, exporte `HF_TOKEN` antes.
+- Se o repo no HF for adapter LoRA, faca merge para modelo completo antes de avaliar.
+
 ## Estado Atual
 - Reward pipeline em 4 estágios implementado.
 - Best-of-N implementado.

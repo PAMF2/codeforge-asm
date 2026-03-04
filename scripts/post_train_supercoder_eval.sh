@@ -190,15 +190,25 @@ if (out_dir / "config.json").exists() and has_architectures(str(out_dir)):
     sys.exit(0)
 
 out_dir.mkdir(parents=True, exist_ok=True)
+offload_dir = Path(root_dir) / "offload" / safe_tag
+offload_dir.mkdir(parents=True, exist_ok=True)
 
 base = AutoModelForCausalLM.from_pretrained(
     base_model,
     token=token,
     torch_dtype="auto",
     device_map="auto",
+    offload_folder=str(offload_dir),
+    offload_state_dict=True,
     trust_remote_code=True,
 )
-adapted = PeftModel.from_pretrained(base, model_source, token=token)
+adapted = PeftModel.from_pretrained(
+    base,
+    model_source,
+    token=token,
+    offload_folder=str(offload_dir),
+    offload_state_dict=True,
+)
 merged = adapted.merge_and_unload()
 merged.save_pretrained(out_dir, safe_serialization=True)
 

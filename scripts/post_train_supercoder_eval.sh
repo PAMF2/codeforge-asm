@@ -22,6 +22,8 @@ INFERENCE_ENGINE="${INFERENCE_ENGINE:-sglang}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 SUPERCODER_BASE_MODEL="${SUPERCODER_BASE_MODEL:-}"
 MERGE_DEVICE="${MERGE_DEVICE:-auto}"
+FORCE_REMERGE="${FORCE_REMERGE:-0}"
+SKIP_BASELINE="${SKIP_BASELINE:-0}"
 
 if [[ -z "${MODEL_UNDER_TEST}" ]]; then
   echo "ERROR: missing model_under_test"
@@ -82,6 +84,7 @@ root_dir = sys.argv[2]
 base_override = sys.argv[3].strip()
 token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
 merge_device = os.environ.get("MERGE_DEVICE", "auto").strip().lower()
+force_remerge = os.environ.get("FORCE_REMERGE", "0").strip() == "1"
 
 def latest_local_adapter_dir(base: Path) -> Path | None:
     ckpt_root = base / "checkpoints"
@@ -189,9 +192,26 @@ import torch
 
 safe_tag = model_id.replace("/", "__").replace(":", "_")
 out_dir = Path(root_dir) / "merged_models" / safe_tag
-if (out_dir / "config.json").exists() and has_architectures(str(out_dir)):
-    print(str(out_dir))
-    sys.exit(0)
+cfg_path = out_dir / "config.json"
+if cfg_path.is_file() and not force_remerge:
+    try:
+        with cfg_path.open("r", encoding="utf-8") as f:
+            cfg_json = json.load(f)
+        if not cfg_json.get("architectures"):
+            base_arch = None
+            try:
+                base_cfg = AutoConfig.from_pretrained(base_model, token=token, trust_remote_code=True)
+                base_arch = getattr(base_cfg, "architectures", None)
+            except Exception:
+                base_arch = None
+            cfg_json["architectures"] = base_arch or ["MistralForCausalLM"]
+            with cfg_path.open("w", encoding="utf-8") as f:
+                json.dump(cfg_json, f, indent=2)
+    except Exception:
+        pass
+    if has_architectures(str(out_dir)):
+        print(str(out_dir))
+        sys.exit(0)
 
 out_dir.mkdir(parents=True, exist_ok=True)
 offload_dir = Path(root_dir) / "offload" / safe_tag
@@ -246,7 +266,6 @@ else:
 merged.save_pretrained(out_dir, safe_serialization=True)
 
 # Ensure merged config has `architectures` for sglang compatibility.
-cfg_path = out_dir / "config.json"
 if cfg_path.is_file():
     try:
         with cfg_path.open("r", encoding="utf-8") as f:
@@ -288,15 +307,19 @@ python src/evaluate.py \
   --max_new_tokens 2000
 
 echo "[4b/5] Evaluate paper_model=${PAPER_MODEL}"
-python src/evaluate.py \
-  --model_name "${PAPER_MODEL}" \
-  --inference_engine "${INFERENCE_ENGINE}" \
-  --split val \
-  --num_workers "${NUM_WORKERS}" \
-  --num_iterations 1 \
-  --best_of 1 \
-  --temperature 0.0 \
-  --max_new_tokens 2000
+if [[ "${SKIP_BASELINE}" != "1" ]]; then
+  python src/evaluate.py \
+    --model_name "${PAPER_MODEL}" \
+    --inference_engine "${INFERENCE_ENGINE}" \
+    --split val \
+    --num_workers "${NUM_WORKERS}" \
+    --num_iterations 1 \
+    --best_of 1 \
+    --temperature 0.0 \
+    --max_new_tokens 2000
+else
+  echo "[4b/5] Skipped paper baseline (SKIP_BASELINE=1)"
+fi
 
 echo "[5/5] Show summaries"
 python print_results.py results

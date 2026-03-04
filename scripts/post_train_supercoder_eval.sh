@@ -196,7 +196,6 @@ out_dir.mkdir(parents=True, exist_ok=True)
 offload_dir = Path(root_dir) / "offload" / safe_tag
 offload_dir.mkdir(parents=True, exist_ok=True)
 
-base = AutoModelForCausalLM.from_pretrained(
 def merge_with(device_choice: str):
     if device_choice == "cpu":
         base_local = AutoModelForCausalLM.from_pretrained(

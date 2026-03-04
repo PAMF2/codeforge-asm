@@ -53,7 +53,8 @@ def print_latest(api: wandb.Api, entity: str, project: str, n: int) -> None:
     if n <= 0:
         return
     print(json.dumps({"latest": n, "project": f"{entity}/{project}"}, ensure_ascii=False))
-    for run in api.runs(f"{entity}/{project}", per_page=n):
+    runs = api.runs(f"{entity}/{project}", per_page=n)
+    for run in list(runs)[:n]:
         print(json.dumps(format_run(run), ensure_ascii=False))
 
 

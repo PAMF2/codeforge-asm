@@ -71,6 +71,7 @@ fi
 echo "[3b/5] Resolve eval model (supports full model or LoRA adapter)"
 MODEL_UNDER_TEST_RESOLVED="$(python - "${MODEL_UNDER_TEST}" "${ROOT_DIR}" "${SUPERCODER_BASE_MODEL}" <<'PY'
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -78,6 +79,58 @@ model_id = sys.argv[1]
 root_dir = sys.argv[2]
 base_override = sys.argv[3].strip()
 token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+
+def latest_local_adapter_dir(base: Path) -> Path | None:
+    ckpt_root = base / "checkpoints"
+    if not ckpt_root.is_dir():
+        return None
+    best_iter = -1
+    best_dir = None
+    for p in ckpt_root.glob("iter_*"):
+        if not p.is_dir():
+            continue
+        m = re.match(r"iter_(\d+)$", p.name)
+        if not m:
+            continue
+        if not (p / "adapter_config.json").is_file():
+            continue
+        it = int(m.group(1))
+        if it > best_iter:
+            best_iter = it
+            best_dir = p
+    return best_dir
+
+def latest_remote_adapter_dir(repo_id: str, root: str, hf_token: str | None) -> Path | None:
+    try:
+        from huggingface_hub import HfApi, snapshot_download
+    except Exception:
+        return None
+    try:
+        files = HfApi().list_repo_files(repo_id=repo_id, repo_type="model", token=hf_token)
+    except Exception:
+        return None
+    best_iter = -1
+    for f in files:
+        m = re.match(r"checkpoints/iter_(\d+)/adapter_config\.json$", f)
+        if not m:
+            continue
+        best_iter = max(best_iter, int(m.group(1)))
+    if best_iter < 0:
+        return None
+    safe_tag = repo_id.replace("/", "__").replace(":", "_")
+    local_dir = Path(root) / "hf_checkpoints" / safe_tag
+    allow = [f"checkpoints/iter_{best_iter}/*"]
+    snapshot_download(
+        repo_id=repo_id,
+        repo_type="model",
+        token=hf_token,
+        local_dir=str(local_dir),
+        allow_patterns=allow,
+    )
+    cand = local_dir / "checkpoints" / f"iter_{best_iter}"
+    if (cand / "adapter_config.json").is_file():
+        return cand
+    return None
 
 def has_architectures(target: str) -> bool:
     try:
@@ -97,12 +150,29 @@ try:
 except Exception as exc:
     raise SystemExit(f"Cannot load peft to inspect adapter '{model_id}': {exc}")
 
+model_source = model_id
 try:
-    peft_cfg = PeftConfig.from_pretrained(model_id, token=token)
+    peft_cfg = PeftConfig.from_pretrained(model_source, token=token)
 except Exception as exc:
-    raise SystemExit(
-        f"Model '{model_id}' has no architectures and is not a readable PEFT adapter: {exc}"
-    )
+    local_candidates = [
+        Path(root_dir) / "codeforge-asm",
+        Path(root_dir),
+    ]
+    adapter_dir = None
+    for base in local_candidates:
+        cand = latest_local_adapter_dir(base)
+        if cand is not None:
+            adapter_dir = cand
+            break
+    if adapter_dir is None:
+        adapter_dir = latest_remote_adapter_dir(model_id, root_dir, token)
+    if adapter_dir is None:
+        raise SystemExit(
+            f"Model '{model_id}' has no architectures and is not a readable PEFT adapter: {exc}. "
+            "No checkpoints/iter_*/adapter_config.json found locally or in the remote HF repo."
+        )
+    model_source = str(adapter_dir)
+    peft_cfg = PeftConfig.from_pretrained(model_source, token=token)
 
 base_model = base_override or getattr(peft_cfg, "base_model_name_or_path", "")
 if not base_model:
@@ -128,12 +198,12 @@ base = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
     trust_remote_code=True,
 )
-adapted = PeftModel.from_pretrained(base, model_id, token=token)
+adapted = PeftModel.from_pretrained(base, model_source, token=token)
 merged = adapted.merge_and_unload()
 merged.save_pretrained(out_dir, safe_serialization=True)
 
 try:
-    tok = AutoTokenizer.from_pretrained(model_id, token=token, trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(model_source, token=token, trust_remote_code=True)
 except Exception:
     tok = AutoTokenizer.from_pretrained(base_model, token=token, trust_remote_code=True)
 tok.save_pretrained(out_dir)

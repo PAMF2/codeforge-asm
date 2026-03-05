@@ -25,14 +25,25 @@ import yaml
 # ── torch_xla (must import before torch on TPU) ──────────────────────────────
 try:
     import torch_xla.core.xla_model as xm
-
     _XLA_AVAILABLE = True
-    _DEVICE = xm.xla_device()
-    print(f"[TPU] XLA device: {_DEVICE}")
 except ImportError:
+    xm = None
     _XLA_AVAILABLE = False
-    _DEVICE = None
-    print("[TPU] WARNING: torch_xla not found — falling back to CPU")
+
+_DEVICE = None  # initialized lazily in main()
+
+
+def _get_device():
+    global _DEVICE
+    if _DEVICE is not None:
+        return _DEVICE
+    if _XLA_AVAILABLE:
+        _DEVICE = xm.xla_device()
+        print(f"[TPU] XLA device: {_DEVICE}")
+    else:
+        _DEVICE = torch.device("cpu")
+        print("[TPU] WARNING: torch_xla not found — using CPU")
+    return _DEVICE
 
 import torch
 import torch.nn.functional as F
@@ -120,11 +131,9 @@ def build_model_and_tokenizer(cfg: RuntimeConfig) -> tuple[Any, Any]:
             print(f"[TPU] Gradient checkpointing skipped: {e}")
 
     # Move to XLA device
-    if _XLA_AVAILABLE:
-        model = model.to(_DEVICE)
-        print(f"[TPU] Model moved to {_DEVICE}")
-    else:
-        model = model.to("cpu")
+    device = _get_device()
+    model = model.to(device)
+    print(f"[TPU] Model moved to {device}")
 
     return model, tokenizer
 
@@ -143,7 +152,7 @@ class TPUTextGenerator:
             padding=True,
             truncation=True,
         )
-        device = _DEVICE if _XLA_AVAILABLE else torch.device("cpu")
+        device = _get_device()
         encoded = {k: v.to(device) for k, v in encoded.items()}
 
         was_training = self.model.training
@@ -210,7 +219,7 @@ def run_grpo_update_tpu(
     max_len = int(training.get("train_max_seq_len", 1024))
     grad_clip = float(training.get("grad_clip_norm", 1.0))
 
-    device = _DEVICE if _XLA_AVAILABLE else torch.device("cpu")
+    device = _get_device()
     weights = _group_relative_weights(rows)
     total_loss = 0.0
     used = 0

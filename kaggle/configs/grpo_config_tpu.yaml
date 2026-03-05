@@ -5,7 +5,7 @@ project:
 # Use 3B model — fits in bf16 without quantization on a single TPU core (~6GB)
 # For 8B: shard across cores with FSDP or reduce batch size significantly
 model:
-  name_or_path: mistralai/Ministral-3B-Instruct-2410
+  name_or_path: Qwen/Qwen2.5-3B-Instruct
   trust_remote_code: true
   load_in_4bit: false        # no bitsandbytes on TPU
   torch_dtype: bfloat16      # TPU natively supports bf16

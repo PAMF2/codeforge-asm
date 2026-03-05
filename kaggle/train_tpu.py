@@ -24,13 +24,15 @@ import yaml
 
 # ── torch_xla (must import before torch on TPU) ──────────────────────────────
 try:
+    import torch_xla
     import torch_xla.core.xla_model as xm
     _XLA_AVAILABLE = True
 except ImportError:
+    torch_xla = None
     xm = None
     _XLA_AVAILABLE = False
 
-_DEVICE = None  # initialized lazily in main()
+_DEVICE = None  # initialized lazily
 
 
 def _get_device():
@@ -38,11 +40,11 @@ def _get_device():
     if _DEVICE is not None:
         return _DEVICE
     if _XLA_AVAILABLE:
-        _DEVICE = xm.xla_device()
-        print(f"[TPU] XLA device: {_DEVICE}")
+        _DEVICE = torch_xla.device()
+        print(f"[TPU] device: {_DEVICE}")
     else:
         _DEVICE = torch.device("cpu")
-        print("[TPU] WARNING: torch_xla not found — using CPU")
+        print("[TPU] torch_xla not found — using CPU")
     return _DEVICE
 
 import torch
@@ -108,7 +110,7 @@ def build_model_and_tokenizer(cfg: RuntimeConfig) -> tuple[Any, Any]:
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         trust_remote_code=trust_remote_code,
-        torch_dtype=torch_dtype,
+        dtype=torch_dtype,
         attn_implementation=attn_impl,
     )
 

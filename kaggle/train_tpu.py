@@ -1,9 +1,3 @@
-# Must be set before any JAX/torch_xla import to prevent JAX from
-# pre-allocating all TPU HBM (default is 75% pre-allocation).
-import os as _os
-_os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-_os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
-
 """
 TPU-adapted training entry point for CodeForge ASM.
 
@@ -17,9 +11,15 @@ Key differences from the standard trainer:
 """
 from __future__ import annotations
 
+import os
+
+# Must be set before any JAX/torch_xla import to prevent JAX from
+# pre-allocating all TPU HBM (default is 75% pre-allocation).
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+
 import argparse
 import json
-import os
 import random
 import sys
 from dataclasses import dataclass

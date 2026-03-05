@@ -148,6 +148,21 @@ def build_model_and_tokenizer(cfg: RuntimeConfig) -> tuple[Any, Any]:
 
 # ── Generation ────────────────────────────────────────────────────────────────
 
+try:
+    from transformers import LogitsProcessor, LogitsProcessorList
+
+    class _XLAMarkStepProcessor(LogitsProcessor):
+        """Calls xm.mark_step() after each token so XLA executes eagerly."""
+        def __call__(self, input_ids: Any, scores: Any) -> Any:
+            if _XLA_AVAILABLE:
+                xm.mark_step()
+            return scores
+
+    _XLA_LOGITS_PROCESSOR = LogitsProcessorList([_XLAMarkStepProcessor()])
+except Exception:
+    _XLA_LOGITS_PROCESSOR = None
+
+
 class TPUTextGenerator:
     def __init__(self, model: Any, tokenizer: Any) -> None:
         self.model = model
@@ -175,6 +190,7 @@ class TPUTextGenerator:
                     max_new_tokens=max_new_tokens,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
+                    logits_processor=_XLA_LOGITS_PROCESSOR,
                 )
                 if _XLA_AVAILABLE:
                     xm.mark_step()

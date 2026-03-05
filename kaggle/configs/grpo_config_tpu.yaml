@@ -1,0 +1,44 @@
+project:
+  name: codeforge-asm-tpu
+  seed: 42
+
+# Use 3B model — fits in bf16 without quantization on a single TPU core (~6GB)
+# For 8B: shard across cores with FSDP or reduce batch size significantly
+model:
+  name_or_path: mistralai/Ministral-3B-Instruct-2410
+  trust_remote_code: true
+  load_in_4bit: false        # no bitsandbytes on TPU
+  torch_dtype: bfloat16      # TPU natively supports bf16
+  attn_implementation: eager # sdpa not fully supported on TPU XLA
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+
+training:
+  dry_run: false
+  grpo_backend: manual       # manual loop with xm.mark_step() — trl backend is GPU-only
+  use_unsloth: false         # GPU-only
+  iterations: 10
+  prompts_per_iteration: 20
+  generations_per_prompt: 8  # lower than GPU (memory) — increase if headroom allows
+  max_new_tokens: 512
+  train_max_seq_len: 1024
+  temperature: 0.8
+  top_p: 0.95
+  learning_rate: 5.0e-6
+  batch_size: 4              # TPU likes multiples of 8; increase for v3-8
+  gradient_accumulation_steps: 2
+  gradient_checkpointing: true
+  grad_clip_norm: 1.0
+  use_mcts_after_iteration: 999  # disable MCTS for initial TPU run
+  use_random_sampling: true
+  push_to_hub: false
+  use_wandb: false           # set to true and export WANDB_API_KEY to enable
+
+reward:
+  timeout_seconds: 12
+
+paths:
+  prompt_dataset: /kaggle/input/codeforge-asm/assembly_swe/dataset.jsonl
+  artifacts_dir: /kaggle/working/artifacts
+  checkpoints_dir: /kaggle/working/checkpoints

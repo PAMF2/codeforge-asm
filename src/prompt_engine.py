@@ -33,7 +33,7 @@ class PromptEngine:
         for item in raw:
             items.append(
                 PromptItem(
-                    id=item["id"],
+                    id=item.get("id") or item["task_id"],
                     tier=item["tier"],
                     instruction=item["instruction"],
                     expected_stdout=item.get("expected_stdout"),

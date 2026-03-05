@@ -39,6 +39,6 @@ reward:
   timeout_seconds: 12
 
 paths:
-  prompt_dataset: /kaggle/input/codeforge-asm/assembly_swe/dataset.jsonl
+  prompt_dataset: /kaggle/working/codeforge-asm/assembly_swe/datasets/dev_v1_30.jsonl
   artifacts_dir: /kaggle/working/artifacts
   checkpoints_dir: /kaggle/working/checkpoints

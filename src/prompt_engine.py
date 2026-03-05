@@ -24,7 +24,11 @@ class PromptEngine:
         self._items = self._load()
 
     def _load(self) -> list[PromptItem]:
-        raw = json.loads(self.dataset_path.read_text(encoding="utf-8-sig"))
+        text = self.dataset_path.read_text(encoding="utf-8-sig")
+        if self.dataset_path.suffix == ".jsonl":
+            raw = [json.loads(line) for line in text.splitlines() if line.strip()]
+        else:
+            raw = json.loads(text)
         items = []
         for item in raw:
             items.append(

@@ -169,18 +169,7 @@ def _xla_sync_optimizer(optimizer: Any) -> None:
     except AttributeError:
         xm.optimizer_step(optimizer)
 
-try:
-    from transformers import LogitsProcessor, LogitsProcessorList
-
-    class _XLAMarkStepProcessor(LogitsProcessor):
-        """Calls xla_sync() after each token so XLA executes eagerly."""
-        def __call__(self, input_ids: Any, scores: Any) -> Any:
-            _xla_sync()
-            return scores
-
-    _XLA_LOGITS_PROCESSOR = LogitsProcessorList([_XLAMarkStepProcessor()])
-except Exception:
-    _XLA_LOGITS_PROCESSOR = None
+_XLA_LOGITS_PROCESSOR = None  # no per-token sync; single sync after generate()
 
 
 class TPUTextGenerator:

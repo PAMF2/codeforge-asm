@@ -148,14 +148,34 @@ def build_model_and_tokenizer(cfg: RuntimeConfig) -> tuple[Any, Any]:
 
 # ── Generation ────────────────────────────────────────────────────────────────
 
+def _xla_sync():
+    """Trigger XLA graph execution (handles both old and new API)."""
+    if not _XLA_AVAILABLE:
+        return
+    try:
+        torch_xla.sync()
+    except AttributeError:
+        xm.mark_step()
+
+
+def _xla_sync_optimizer(optimizer: Any) -> None:
+    """Step optimizer with XLA sync (handles both old and new API)."""
+    if not _XLA_AVAILABLE:
+        optimizer.step()
+        return
+    try:
+        torch_xla.sync()
+        optimizer.step()
+    except AttributeError:
+        xm.optimizer_step(optimizer)
+
 try:
     from transformers import LogitsProcessor, LogitsProcessorList
 
     class _XLAMarkStepProcessor(LogitsProcessor):
-        """Calls xm.mark_step() after each token so XLA executes eagerly."""
+        """Calls xla_sync() after each token so XLA executes eagerly."""
         def __call__(self, input_ids: Any, scores: Any) -> Any:
-            if _XLA_AVAILABLE:
-                xm.mark_step()
+            _xla_sync()
             return scores
 
     _XLA_LOGITS_PROCESSOR = LogitsProcessorList([_XLAMarkStepProcessor()])
@@ -188,12 +208,12 @@ class TPUTextGenerator:
                     temperature=temperature,
                     top_p=top_p,
                     max_new_tokens=max_new_tokens,
+                    min_new_tokens=max_new_tokens,  # fixed length = single XLA compile
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
                     logits_processor=_XLA_LOGITS_PROCESSOR,
                 )
-                if _XLA_AVAILABLE:
-                    xm.mark_step()
+                _xla_sync()
         finally:
             if was_training:
                 self.model.train()
@@ -288,7 +308,7 @@ def run_grpo_update_tpu(
         if used % grad_acc == 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             if _XLA_AVAILABLE:
-                xm.optimizer_step(optimizer)
+                _xla_sync_optimizer(optimizer)
             else:
                 optimizer.step()
             optimizer.zero_grad(set_to_none=True)
@@ -296,7 +316,7 @@ def run_grpo_update_tpu(
     if used > 0 and used % grad_acc != 0:
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         if _XLA_AVAILABLE:
-            xm.optimizer_step(optimizer)
+            _xla_sync_optimizer(optimizer)
         else:
             optimizer.step()
         optimizer.zero_grad(set_to_none=True)

@@ -19,14 +19,14 @@ training:
   grpo_backend: manual       # manual loop with xm.mark_step() — trl backend is GPU-only
   use_unsloth: false         # GPU-only
   iterations: 10
-  prompts_per_iteration: 20
-  generations_per_prompt: 8  # lower than GPU (memory) — increase if headroom allows
-  max_new_tokens: 512
-  train_max_seq_len: 1024
+  prompts_per_iteration: 4   # reduced: fewer XLA recompilations per iter
+  generations_per_prompt: 2  # reduced: less memory, fewer graph compilations
+  max_new_tokens: 128        # reduced: XLA compiles once for fixed length
+  train_max_seq_len: 512     # reduced: smaller graph = faster compile
   temperature: 0.8
   top_p: 0.95
   learning_rate: 5.0e-6
-  batch_size: 4              # TPU likes multiples of 8; increase for v3-8
+  batch_size: 4              # TPU likes multiples of 8
   gradient_accumulation_steps: 2
   gradient_checkpointing: true
   grad_clip_norm: 1.0
